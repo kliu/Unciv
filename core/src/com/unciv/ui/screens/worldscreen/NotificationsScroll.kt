@@ -1,40 +1,46 @@
 package com.unciv.ui.screens.worldscreen
 
 import com.badlogic.gdx.graphics.Color
+import com.badlogic.gdx.graphics.g2d.Batch
 import com.badlogic.gdx.scenes.scene2d.Actor
 import com.badlogic.gdx.scenes.scene2d.Touchable
 import com.badlogic.gdx.scenes.scene2d.actions.Actions
 import com.badlogic.gdx.scenes.scene2d.ui.Cell
 import com.badlogic.gdx.scenes.scene2d.ui.Container
 import com.badlogic.gdx.scenes.scene2d.ui.Image
+import com.badlogic.gdx.scenes.scene2d.ui.Label
 import com.badlogic.gdx.scenes.scene2d.ui.Table
 import com.badlogic.gdx.scenes.scene2d.utils.NinePatchDrawable
 import com.badlogic.gdx.utils.Align
 import com.unciv.GUI
 import com.unciv.logic.civilization.Notification
 import com.unciv.logic.civilization.NotificationCategory
-import com.unciv.ui.components.AutoScrollPane as ScrollPane
-import com.unciv.ui.components.ColorMarkupLabel
-import com.unciv.ui.components.WrappableLabel
-import com.unciv.ui.components.extensions.onClick
+import com.unciv.models.translations.tr
 import com.unciv.ui.components.extensions.packIfNeeded
 import com.unciv.ui.components.extensions.surroundWithCircle
+import com.unciv.ui.components.extensions.toLabel
+import com.unciv.ui.components.input.onClick
+import com.unciv.ui.components.widgets.ColorMarkupLabel
+import com.unciv.ui.components.widgets.WrappableLabel
 import com.unciv.ui.images.IconCircleGroup
 import com.unciv.ui.images.ImageGetter
 import com.unciv.ui.screens.basescreen.BaseScreen
+import com.unciv.ui.components.widgets.AutoScrollPane as ScrollPane
 
 /*TODO
  *  Un-hiding the notifications when new ones arrive is a little pointless due to Categories:
  *      * try to scroll new into view? Very complicated as the "old" state is only "available" in the Widgets
  *      * Don't unless a new user option disables categories, then scroll to top?
  *  Idea: Blink or tint the button when new notifications while Hidden
- *  Idea: The little "1" on the bell - remove and draw actual count
  */
 
 class NotificationsScroll(
     private val worldScreen: WorldScreen
 ) : ScrollPane(null) {
-    enum class UserSetting(val static: Boolean = false) { Disabled(true), Hidden, Visible, Permanent(true) }
+    enum class UserSetting(val static: Boolean = false) {
+        Disabled(true), Hidden, Visible, Permanent(true);
+        companion object { fun default() = Visible }
+    }
 
     private companion object {
         /** Scale the entire ScrollPane by this factor */
@@ -65,6 +71,12 @@ class NotificationsScroll(
         const val restoreButtonSize = 42f
         /** Distance of restore button to TileInfoTable and screen edge */
         const val restoreButtonPad = 12f
+        /** The outer size of the number+circle within the restore button */
+        const val restoreButtonNumbersSize = 0.5f * restoreButtonSize
+        /** Font size for the "count" number label overlaid on the restore button */
+        const val restoreButtonNumberFontSize = 13
+        /** The x/y coords of the center of the number+circle within the restore button */
+        const val restoreButtonNumbersCenter = restoreButtonSize - restoreButtonNumbersSize / 2
         /** Background tint for [oneTimeNotification] */
         private val oneTimeNotificationColor = Color.valueOf("fceea8")
     }
@@ -109,6 +121,16 @@ class NotificationsScroll(
         setScale(scaleFactor)
         height = worldScreen.stage.height * inverseScaleFactor
     }
+
+    /**
+     * If a Gdx ScrollPane has content larger than its size on both dimensions (if only one axis is
+     * scrollable, the wheel will always scroll that axis), it will prefer mapping the mouse wheel
+     * to *horizontal* scrolling, which is not quite the best choice for our notifications.
+     *
+     * The intuitive approach might be to change the listener (by overriding [addScrollListener]),
+     * but luckily this works too.
+     */
+    override fun getMouseWheelX() = 0f
 
     /** Access to hidden "state" - writing it will ensure this is fully visible or hidden and the
      *  restore button shown as needed - with animation. */
@@ -181,7 +203,7 @@ class NotificationsScroll(
             coveredNotificationsBottom + restoreButtonPad,
             Align.bottomRight)
     }
-
+    
     private fun updateContent(
         notifications: List<Notification>,
         coveredNotificationsTop: Float,
@@ -213,6 +235,9 @@ class NotificationsScroll(
         if (notificationsHash == newHash && highlightNotification == null) return false
         notificationsHash = newHash
 
+        // Inform the Bell Button about the count - ignoring oneTimeNotification
+        restoreButton.updateCount(notifications.size)
+
         // Rebuild the notifications list
         notificationsTable.clear()
         notificationsTable.pack()  // forget last width!
@@ -228,7 +253,7 @@ class NotificationsScroll(
         val backgroundDrawable = BaseScreen.skinStrings.getUiBackground("WorldScreen/Notification", BaseScreen.skinStrings.roundedEdgeRectangleShape)
 
         val orderedNotifications = (additionalNotification + notifications.asReversed())
-            .groupBy { NotificationCategory.safeValueOf(it.category) ?: NotificationCategory.General }
+            .groupBy { it.category }
             .toSortedMap()  // This sorts by Category ordinal, so far intentional - the order of the grouped lists are unaffected
         for ((category, categoryNotifications) in orderedNotifications) {
             if (category == NotificationCategory.General)
@@ -276,7 +301,7 @@ class NotificationsScroll(
                 .minHeight(2f).width(minCategoryLineWidth)
             add(Table().apply {
                 background = backgroundDrawable
-                val label = ColorMarkupLabel(category.name, Color.BLACK, fontSize = fontSize)
+                val label = ColorMarkupLabel(category.name, ImageGetter.CHARCOAL, fontSize = fontSize)
                 add(label)
                 captionWidth = prefWidth  // of this wrapper including background rims
                 captionWidth
@@ -323,7 +348,7 @@ class NotificationsScroll(
             }
 
             val maxLabelWidth = maxEntryWidth - (itemIconSize + 5f) * notification.icons.size - 10f
-            val label = WrappableLabel(notification.text, maxLabelWidth, Color.BLACK, labelFontSize, hideIcons = true)
+            val label = WrappableLabel(notification.text, maxLabelWidth, ImageGetter.CHARCOAL, labelFontSize, hideIcons = true)
             label.setAlignment(Align.center)
             if (label.prefWidth > maxLabelWidth * scaleFactor) {  // can't explain why the comparison needs scaleFactor
                 label.wrap = true
@@ -341,7 +366,7 @@ class NotificationsScroll(
             add(listItem).pad(topBottomPad, listItemPad, topBottomPad, rightPadToScreenEdge)
             touchable = Touchable.enabled
             onClick {
-                notification.action?.execute(worldScreen)
+                notification.execute(worldScreen)
                 clickedNotification = notification
                 GUI.setUpdateWorldOnNextRender()
             }
@@ -377,12 +402,28 @@ class NotificationsScroll(
         private var blockCheck = true
         private var blockAct = true
         private var active = false
+        private var shownCount = 0
+        private val countLabel: Label
+        private val labelInnerCircle: Image
+        private val labelOuterCircle: Image
 
         init {
             actor = ImageGetter.getImage("OtherIcons/Notifications")
                 .surroundWithCircle(restoreButtonSize * 0.9f, color = BaseScreen.skinStrings.skinConfig.baseColor)
                 .surroundWithCircle(restoreButtonSize, resizeActor = false)
             size(restoreButtonSize)
+
+            countLabel = "".toLabel(ImageGetter.CHARCOAL, restoreButtonNumberFontSize, Align.center)
+            // not using surroundWithCircle for the count, as the centering will break if positioned within another IconCircleGroup (why?)
+            labelInnerCircle = ImageGetter.getCircle(Color.WHITE, restoreButtonNumbersSize * 0.9f)
+            labelInnerCircle.centerAtNumberPosition()
+            labelOuterCircle = ImageGetter.getCircle(ImageGetter.CHARCOAL, restoreButtonNumbersSize)
+            labelOuterCircle.centerAtNumberPosition()
+            actor.addActor(labelOuterCircle)
+            actor.addActor(labelInnerCircle)
+            actor.addActor(countLabel)
+            updateCount(1)
+
             color = color.cpy()  // So we don't mutate a skin element while fading
             color.a = 0f  // for first fade-in
             onClick {
@@ -390,6 +431,16 @@ class NotificationsScroll(
                 hide()
             }
             pack()  // `this` needs to adopt the size of `actor`, won't happen automatically (surprisingly)
+        }
+
+        private fun Actor.centerAtNumberPosition() = setPosition(restoreButtonNumbersCenter, restoreButtonNumbersCenter, Align.center)
+
+        fun updateCount(count: Int) {
+            if (count == shownCount) return
+            shownCount = count
+            countLabel.setText(if (count > 9) "+" else count.tr()) // should we use Maya numerals for the Maya?
+            countLabel.pack()
+            countLabel.centerAtNumberPosition()
         }
 
         fun block() {
@@ -440,12 +491,14 @@ class NotificationsScroll(
             // Actions are blocked while update() is rebuilding the UI elements - to be safe from unexpected state changes
             if (!blockAct) super.act(delta)
         }
+
+        override fun draw(batch: Batch?, parentAlpha: Float) = super.draw(batch, parentAlpha)
     }
 
     private fun getUserSettingCheckDisabled(): Boolean {
         val settingString = GUI.getSettings().notificationScroll
-        val setting = UserSetting.values().firstOrNull { it.name == settingString }
-            ?: UserSetting.Visible
+        val setting = UserSetting.entries.firstOrNull { it.name == settingString }
+            ?: UserSetting.default()
         userSettingChanged = false
         if (setting == userSetting)
             return setting == UserSetting.Disabled
@@ -458,7 +511,7 @@ class NotificationsScroll(
         notificationsHash = 0
         scrollX = 0f
         updateVisualScroll()
-        setScrollingDisabled(false, false)
+        setScrollingDisabled(x = false, y = false)
         isVisible = false
         restoreButton.hide()
         return true
@@ -497,4 +550,8 @@ class NotificationsScroll(
         userSetting = newSetting
         GUI.getSettings().notificationScroll = newSetting.name
     }
+
+    override fun draw(batch: Batch?, parentAlpha: Float) = super.draw(batch, parentAlpha)
+    override fun act(delta: Float) = super.act(delta)
+    override fun hit(x: Float, y: Float, touchable: Boolean): Actor? = super.hit(x, y, touchable)
 }

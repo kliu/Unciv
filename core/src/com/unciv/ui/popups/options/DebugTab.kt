@@ -1,19 +1,26 @@
 package com.unciv.ui.popups.options
 
+import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.scenes.scene2d.ui.Table
+import com.badlogic.gdx.scenes.scene2d.ui.TextButton.TextButtonStyle
 import com.unciv.GUI
 import com.unciv.UncivGame
-import com.unciv.logic.files.UncivFiles
+import com.unciv.logic.UncivShowableException
 import com.unciv.logic.files.MapSaver
+import com.unciv.logic.files.UncivFiles
 import com.unciv.models.ruleset.RulesetCache
 import com.unciv.models.ruleset.tile.ResourceType
-import com.unciv.ui.screens.basescreen.BaseScreen
-import com.unciv.ui.components.UncivSlider
-import com.unciv.ui.components.UncivTextField
-import com.unciv.ui.components.extensions.onClick
+import com.unciv.models.translations.tr
+import com.unciv.ui.components.widgets.UncivTextField
+import com.unciv.ui.components.extensions.addSeparator
 import com.unciv.ui.components.extensions.toCheckBox
 import com.unciv.ui.components.extensions.toLabel
 import com.unciv.ui.components.extensions.toTextButton
+import com.unciv.ui.components.input.onClick
+import com.unciv.ui.components.widgets.UncivSlider
+import com.unciv.ui.popups.ToastPopup
+import com.unciv.ui.screens.basescreen.BaseScreen
+import com.unciv.utils.Concurrency
 import com.unciv.utils.DebugUtils
 
 fun debugTab(
@@ -25,7 +32,7 @@ fun debugTab(
 
     if (GUI.isWorldLoaded()) {
         val simulateButton = "Simulate until turn:".toTextButton()
-        val simulateTextField = UncivTextField.create("Turn", DebugUtils.SIMULATE_UNTIL_TURN.toString())
+        val simulateTextField = UncivTextField("Turn", DebugUtils.SIMULATE_UNTIL_TURN.tr())
         val invalidInputLabel = "This is not a valid integer!".toLabel().also { it.isVisible = false }
         simulateButton.onClick {
             val simulateUntilTurns = simulateTextField.text.toIntOrNull()
@@ -42,47 +49,20 @@ fun debugTab(
         add(invalidInputLabel).colspan(2).row()
     }
 
-    add("Supercharged".toCheckBox(DebugUtils.SUPERCHARGED) {
-        DebugUtils.SUPERCHARGED = it
-    }).colspan(2).row()
-    add("View entire map".toCheckBox(DebugUtils.VISIBLE_MAP) {
-        DebugUtils.VISIBLE_MAP = it
-    }).colspan(2).row()
-    add("Show coordinates on tiles".toCheckBox(DebugUtils.SHOW_TILE_COORDS) {
-        DebugUtils.SHOW_TILE_COORDS = it
-    }).colspan(2).row()
+    optionsPopup.addCheckbox(this, "Supercharged", DebugUtils.SUPERCHARGED) { DebugUtils.SUPERCHARGED = it }
+    optionsPopup.addCheckbox(this, "View entire map", DebugUtils.VISIBLE_MAP) { DebugUtils.VISIBLE_MAP = it }
+    optionsPopup.addCheckbox(this, "Show coordinates on tiles", DebugUtils.SHOW_TILE_COORDS) { DebugUtils.SHOW_TILE_COORDS = it }
+    optionsPopup.addCheckbox(this, "Show tile image locations", DebugUtils.SHOW_TILE_IMAGE_LOCATIONS) { DebugUtils.SHOW_TILE_IMAGE_LOCATIONS = it }
 
     val curGameInfo = game.gameInfo
     if (curGameInfo != null) {
-        add("God mode (current game)".toCheckBox(curGameInfo.gameParameters.godMode) {
-            curGameInfo.gameParameters.godMode = it
-        }).colspan(2).row()
-    }
-    add("Enable espionage option".toCheckBox(game.settings.enableEspionageOption) {
-        game.settings.enableEspionageOption = it
-    }).colspan(2).row()
-
-    add("Save games compressed".toCheckBox(UncivFiles.saveZipped) {
-        UncivFiles.saveZipped = it
-    }).colspan(2).row()
-    add("Save maps compressed".toCheckBox(MapSaver.saveZipped) {
-        MapSaver.saveZipped = it
-    }).colspan(2).row()
-
-    if (GUI.keyboardAvailable) {
-        add("Show keyboard bindings".toCheckBox(optionsPopup.enableKeyBindingsTab) {
-            optionsPopup.enableKeyBindingsTab = it
-            optionsPopup.showOrHideKeyBindings()
-        }).colspan(2).row()
+        optionsPopup.addCheckbox(this, "God mode (current game)", curGameInfo.gameParameters.godMode) { curGameInfo.gameParameters.godMode = it }
     }
 
-    add("Gdx Scene2D debug".toCheckBox(BaseScreen.enableSceneDebug) {
-        BaseScreen.enableSceneDebug = it
-    }).colspan(2).row()
-
-    add("Allow untyped Uniques in mod checker".toCheckBox(RulesetCache.modCheckerAllowUntypedUniques) {
-        RulesetCache.modCheckerAllowUntypedUniques = it
-    }).colspan(2).row()
+    optionsPopup.addCheckbox(this, "Save games compressed", UncivFiles.saveZipped) { UncivFiles.saveZipped = it }
+    optionsPopup.addCheckbox(this, "Save maps compressed", MapSaver.saveZipped) { MapSaver.saveZipped = it }
+    optionsPopup.addCheckbox(this, "Gdx Scene2D debug", BaseScreen.enableSceneDebug) { BaseScreen.enableSceneDebug = it }
+        
 
     add(Table().apply {
         add("Unique misspelling threshold".toLabel()).left().fillX()
@@ -119,10 +99,31 @@ fun debugTab(
             tile.resourceAmount = 999
             // Debug option, so if it crashes on this that's relatively fine
             // If this becomes a problem, check if such an improvement exists and otherwise plop down a great improvement or so
-            tile.changeImprovement(resource.getImprovements().first())
+            tile.setImprovement(resource.getImprovements().first())
         }
         curGameInfo.getCurrentPlayerCivilization().cache.updateSightAndResources()
         GUI.setUpdateWorldOnNextRender()
     }
     add(giveResourcesButton).colspan(2).row()
+
+    add("Load online multiplayer game as hotseat from clipboard".toTextButton().onClick {
+        // Code duplication : LoadGameScreen.getLoadFromClipboardButton
+        Concurrency.run {
+            try {
+                val clipboardContentsString = Gdx.app.clipboard.contents.trim()
+                val loadedGame = UncivFiles.gameInfoFromString(clipboardContentsString)
+                loadedGame.gameParameters.isOnlineMultiplayer = false
+                optionsPopup.game.loadGame(loadedGame, callFromLoadScreen =  true)
+                optionsPopup.close()
+            } catch (ex: Exception) {
+                ToastPopup(ex.message ?: ex::class.java.simpleName, optionsPopup.stageToShowOn)
+            }
+        }
+    }).colspan(2).row()
+
+    addSeparator()
+    add("* Crash Unciv! *".toTextButton(skin.get("negative", TextButtonStyle::class.java)).onClick {
+        throw UncivShowableException("Intentional crash")
+    }).colspan(2).row()
+    addSeparator()
 }

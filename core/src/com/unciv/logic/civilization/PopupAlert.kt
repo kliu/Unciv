@@ -11,16 +11,24 @@ enum class AlertType : IsPartOfGameInfoSerialization {
     CityConquered,
     CityTraded,
     BorderConflict,
+    TilesStolen,
+
     DemandToStopSettlingCitiesNear,
     CitySettledNearOtherCivDespiteOurPromise,
+
+    DemandToStopSpreadingReligion,
+    ReligionSpreadDespiteOurPromise,
+
     GoldenAge,
     DeclarationOfFriendship,
     StartIntro,
     DiplomaticMarriage,
     BulliedProtectedMinor,
     AttackedProtectedMinor,
+    AttackedAllyMinor,
     RecapturedCivilian,
-    GameHasBeenWon
+    GameHasBeenWon,
+    Event
 }
 
 class PopupAlert : IsPartOfGameInfoSerialization {

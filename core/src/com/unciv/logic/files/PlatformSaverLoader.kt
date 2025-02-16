@@ -20,4 +20,23 @@ interface PlatformSaverLoader {
         onLoaded: (data: String, location: String) -> Unit,  // On-load-complete callback
         onError: (Exception) -> Unit = {}                    // On-load-error callback
     )
+
+    /** Invisible Exception can be used with onError callbacks to indicate the User cancelled the operation and needs no message */
+    class Cancelled : Exception()
+
+    companion object {
+        val None = object : PlatformSaverLoader {
+            override fun saveGame(
+                data: String,
+                suggestedLocation: String,
+                onSaved: (location: String) -> Unit,
+                onError: (ex: Exception) -> Unit
+            ) {}
+
+            override fun loadGame(
+                onLoaded: (data: String, location: String) -> Unit,
+                onError: (Exception) -> Unit
+            ) {}
+        }
+    }
 }

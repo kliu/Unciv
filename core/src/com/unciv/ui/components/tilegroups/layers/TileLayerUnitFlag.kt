@@ -1,5 +1,6 @@
 package com.unciv.ui.components.tilegroups.layers
 
+import com.badlogic.gdx.graphics.g2d.Batch
 import com.badlogic.gdx.scenes.scene2d.Touchable
 import com.badlogic.gdx.scenes.scene2d.ui.Table
 import com.badlogic.gdx.utils.Align
@@ -7,37 +8,48 @@ import com.unciv.UncivGame
 import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.map.mapunit.MapUnit
 import com.unciv.models.ruleset.unique.LocalUniqueCache
-import com.unciv.ui.images.ImageGetter
-import com.unciv.ui.components.tilegroups.TileGroup
-import com.unciv.ui.screens.basescreen.BaseScreen
-import com.unciv.ui.components.UnitGroup
+import com.unciv.models.translations.tr
 import com.unciv.ui.components.extensions.center
 import com.unciv.ui.components.extensions.toLabel
+import com.unciv.ui.components.tilegroups.TileGroup
+import com.unciv.ui.components.widgets.UnitIconGroup
+import com.unciv.ui.images.ImageGetter
+import com.unciv.ui.screens.basescreen.BaseScreen
 
+/** The unit flag is the synbol that appears behind the map unit - circle regularly, shield when defending, etc */
 class TileLayerUnitFlag(tileGroup: TileGroup, size: Float) : TileLayer(tileGroup, size) {
 
-    private var slot1Icon: UnitGroup? = null
-    private var slot2Icon: UnitGroup? = null
+    private var noIcons = true
+    private var civilianUnitIcon: UnitIconGroup? = null
+    private var militaryUnitIcon: UnitIconGroup? = null
 
     init {
         touchable = Touchable.disabled
     }
 
     override fun act(delta: Float) { // No 'snapshotting' since we trust it will remain the same
+        if (noIcons)
+            return
         for (child in children)
             child.act(delta)
     }
 
+    // For perf profiling
+    override fun draw(batch: Batch?, parentAlpha: Float) {
+        if (noIcons) return
+        super.draw(batch, parentAlpha)
+    }
+
     private fun clearSlots() {
-        slot1Icon?.remove()
-        slot2Icon?.remove()
+        civilianUnitIcon?.remove()
+        militaryUnitIcon?.remove()
     }
 
     private fun showMilitaryUnit(viewingCiv: Civilization) = tileGroup.isForceVisible
             || viewingCiv.viewableInvisibleUnitsTiles.contains(tileGroup.tile)
             || !tileGroup.tile.hasEnemyInvisibleUnit(viewingCiv)
 
-    private fun setIconPosition(slot: Int, icon: UnitGroup) {
+    private fun setIconPosition(slot: Int, icon: UnitIconGroup) {
         if (slot == 0) {
             icon.center(this)
             icon.y += -20f
@@ -47,12 +59,12 @@ class TileLayerUnitFlag(tileGroup: TileGroup, size: Float) : TileLayer(tileGroup
         }
     }
 
-    private fun newUnitIcon(slot: Int, unit: MapUnit?, isViewable: Boolean, viewingCiv: Civilization?): UnitGroup? {
+    private fun newUnitIcon(slot: Int, unit: MapUnit?, isViewable: Boolean, viewingCiv: Civilization?): UnitIconGroup? {
 
-        var newIcon: UnitGroup? = null
+        var newIcon: UnitIconGroup? = null
 
         if (unit != null && isViewable) {
-            newIcon = UnitGroup(unit, 30f)
+            newIcon = UnitIconGroup(unit, 30f)
             addActor(newIcon)
             setIconPosition(slot, newIcon)
 
@@ -70,7 +82,7 @@ class TileLayerUnitFlag(tileGroup: TileGroup, size: Float) : TileLayer(tileGroup
                 newIcon.actionGroup?.color?.a = 0.5f
 
             // Fade out flag for own out-of-moves units
-            if (unit.civ == viewingCiv && unit.currentMovement == 0f)
+            if (unit.civ == viewingCiv && !unit.hasMovement())
                 newIcon.color.a = 0.5f * UncivGame.Current.settings.unitIconOpacity
 
         }
@@ -96,7 +108,7 @@ class TileLayerUnitFlag(tileGroup: TileGroup, size: Float) : TileLayer(tileGroup
         val aircraftImage = ImageGetter.getImage("OtherIcons/Aircraft")
         aircraftImage.color = iconColor
         table.add(aircraftImage).size(8f)
-        table.add(unit.getTile().airUnits.size.toString().toLabel(iconColor, 10, alignment = Align.center))
+        table.add(unit.getTile().airUnits.size.tr().toLabel(iconColor, 10, alignment = Align.center))
 
         airUnitTable.add(table).expand().center().right()
 
@@ -104,20 +116,20 @@ class TileLayerUnitFlag(tileGroup: TileGroup, size: Float) : TileLayer(tileGroup
     }
 
     fun selectFlag(unit: MapUnit) {
-        getFlag(unit)?.selectUnit()
+        getIcon(unit)?.selectUnit()
     }
 
-    fun getFlag(unit: MapUnit) : UnitGroup? {
-        if (slot1Icon?.unit == unit)
-            return slot1Icon
-        else if (slot2Icon?.unit == unit)
-            return slot2Icon
+    fun getIcon(unit: MapUnit) : UnitIconGroup? {
+        if (civilianUnitIcon?.unit == unit)
+            return civilianUnitIcon
+        else if (militaryUnitIcon?.unit == unit)
+            return militaryUnitIcon
         return null
     }
 
     private fun highlightRed() {
-        slot1Icon?.highlightRed()
-        slot2Icon?.highlightRed()
+        civilianUnitIcon?.highlightRed()
+        militaryUnitIcon?.highlightRed()
     }
 
     private fun fillSlots(viewingCiv: Civilization?) {
@@ -126,12 +138,12 @@ class TileLayerUnitFlag(tileGroup: TileGroup, size: Float) : TileLayer(tileGroup
         val isViewable = isForceVisible || isViewable(viewingCiv!!)
         val isVisibleMilitary = isForceVisible || showMilitaryUnit(viewingCiv!!)
 
-        val isSlot1Shown = isViewable
-        val isSlot2Shown = isViewable && isVisibleMilitary
+        val isCivilianShown = isViewable
+        val isMilitaryShown = isViewable && isVisibleMilitary
 
-        slot1Icon = newUnitIcon(0, tileGroup.tile.civilianUnit, isSlot1Shown, viewingCiv)
-        slot2Icon = newUnitIcon(1, tileGroup.tile.militaryUnit, isSlot2Shown, viewingCiv)
-
+        civilianUnitIcon = newUnitIcon(0, tileGroup.tile.civilianUnit, isCivilianShown, viewingCiv)
+        militaryUnitIcon = newUnitIcon(1, tileGroup.tile.militaryUnit, isMilitaryShown, viewingCiv)
+        noIcons = civilianUnitIcon == null && militaryUnitIcon == null
     }
 
     override fun doUpdate(viewingCiv: Civilization?, localUniqueCache: LocalUniqueCache) {
@@ -139,7 +151,7 @@ class TileLayerUnitFlag(tileGroup: TileGroup, size: Float) : TileLayer(tileGroup
         fillSlots(viewingCiv)
 
         if (viewingCiv != null) {
-            val unitsInTile = tile().getUnits()
+            val unitsInTile = tile.getUnits()
             val shouldBeHighlighted = unitsInTile.any()
                     && unitsInTile.first().civ.isAtWarWith(viewingCiv)
                     && isViewable(viewingCiv)
@@ -152,6 +164,7 @@ class TileLayerUnitFlag(tileGroup: TileGroup, size: Float) : TileLayer(tileGroup
 
     fun reset() {
         clearSlots()
+        noIcons = true
     }
 
 }

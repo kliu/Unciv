@@ -1,12 +1,13 @@
 package com.unciv.ui.components.tilegroups.layers
 
+import com.badlogic.gdx.graphics.g2d.Batch
 import com.badlogic.gdx.scenes.scene2d.Actor
 import com.badlogic.gdx.scenes.scene2d.ui.Image
 import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.map.tile.Tile
 import com.unciv.models.ruleset.unique.LocalUniqueCache
-import com.unciv.ui.images.ImageGetter
 import com.unciv.ui.components.tilegroups.TileGroup
+import com.unciv.ui.images.ImageGetter
 import kotlin.math.PI
 import kotlin.math.atan
 
@@ -20,6 +21,7 @@ class TileLayerBorders(tileGroup: TileGroup, size: Float) : TileLayer(tileGroup,
 
     override fun act(delta: Float) {}
     override fun hit(x: Float, y: Float, touchable: Boolean): Actor? = null
+    override fun draw(batch: Batch?, parentAlpha: Float) = super.draw(batch, parentAlpha)
 
     private var previousTileOwner: Civilization? = null
     private val borderSegments = HashMap<Tile, BorderSegment>()
@@ -31,6 +33,17 @@ class TileLayerBorders(tileGroup: TileGroup, size: Float) : TileLayer(tileGroup,
                     image.remove()
             borderSegments.clear()
         }
+    }
+
+
+    /** Returns the left shared neighbor of `this` and [neighbor] (relative to the view direction `this`->[neighbor]), or null if there is no such tile. */
+    private fun Tile.getLeftSharedNeighbor(neighbor: Tile): Tile? {
+        return tileMap.getClockPositionNeighborTile(this,(tileMap.getNeighborTileClockPosition(this, neighbor) - 2) % 12)
+    }
+
+    /** Returns the right shared neighbor of `this` and [neighbor] (relative to the view direction `this`->[neighbor]), or null if there is no such tile. */
+    private fun Tile.getRightSharedNeighbor(neighbor: Tile): Tile? {
+        return tileMap.getClockPositionNeighborTile(this,(tileMap.getNeighborTileClockPosition(this, neighbor) + 2) % 12)
     }
 
     private fun updateBorders() {
@@ -106,7 +119,7 @@ class TileLayerBorders(tileGroup: TileGroup, size: Float) : TileLayer(tileGroup,
                     !borderSegment.isLeftConcave && !borderSegment.isRightConcave -> "Convex"
                     !borderSegment.isLeftConcave && borderSegment.isRightConcave -> "ConvexConcave"
                     borderSegment.isLeftConcave && !borderSegment.isRightConcave -> "ConcaveConvex"
-                    else -> throw IllegalStateException("This shouldn't happen?")
+                    else -> error("This shouldn't happen?")
                 }
 
                 val relativeWorldPosition = tile.tileMap.getNeighborTilePositionAsWorldCoords(tile, neighbor)
@@ -115,7 +128,7 @@ class TileLayerBorders(tileGroup: TileGroup, size: Float) : TileLayer(tileGroup,
                 val angle = sign * (atan(sign * relativeWorldPosition.y / relativeWorldPosition.x) * 180 / PI - 90.0).toFloat()
 
                 val innerBorderImage = ImageGetter.getImage(
-                    strings().orFallback { getBorder(borderShapeString,"Inner") }
+                    strings.orFallback { getBorder(borderShapeString,"Inner") }
                 ).setHexagonSize()
 
                 addActor(innerBorderImage)
@@ -124,7 +137,7 @@ class TileLayerBorders(tileGroup: TileGroup, size: Float) : TileLayer(tileGroup,
                 innerBorderImage.color = civOuterColor
 
                 val outerBorderImage = ImageGetter.getImage(
-                    strings().orFallback { getBorder(borderShapeString, "Outer") }
+                    strings.orFallback { getBorder(borderShapeString, "Outer") }
                 ).setHexagonSize()
 
                 addActor(outerBorderImage)

@@ -16,11 +16,13 @@ class CapitalConnectionsFinder(private val civInfo: Civilization) {
 
     private val openBordersCivCities = civInfo.gameInfo.getCities().filter { canEnterBordersOf(it.civ) }
 
-    private val harbor = "Harbor"   // hardcoding at least centralized for this class for now
-    private val road = RoadStatus.Road.name
-    private val railroad = RoadStatus.Railroad.name
-    private val harborFromRoad = "$harbor-$road"
-    private val harborFromRailroad = "$harbor-$railroad"
+    companion object {
+        private const val HARBOR = "Harbor"   // hardcoding at least centralized for this class for now
+        private val road = RoadStatus.Road.name
+        private val railroad = RoadStatus.Railroad.name
+        private val harborFromRoad = "$HARBOR-$road"
+        private val harborFromRailroad = "$HARBOR-$railroad"
+    }
 
     private val ruleset = civInfo.gameInfo.ruleset
     private val roadIsResearched = ruleset.tileImprovements[road].let {
@@ -44,7 +46,7 @@ class CapitalConnectionsFinder(private val civInfo: Civilization) {
                 if (cityToConnectFrom.containsHarbor()) {
                     checkHarbor(cityToConnectFrom)
                 }
-                if (railroadIsResearched){
+                if (railroadIsResearched) {
                     val mediumsReached= citiesReachedToMediums[cityToConnectFrom]!!
                     if(mediumsReached.contains("Start") || mediumsReached.contains(railroad) || mediumsReached.contains(harborFromRailroad))
                         checkRailroad(cityToConnectFrom) // This is only relevant for city connection if there is an unbreaking line from the capital
@@ -60,33 +62,33 @@ class CapitalConnectionsFinder(private val civInfo: Civilization) {
 
     private fun checkRoad(cityToConnectFrom: City) {
         check(
-                cityToConnectFrom,
-                transportType = road,
-                overridingTransportType = railroad,
-                tileFilter = { tile -> tile.hasConnection(civInfo) }
+            cityToConnectFrom,
+            transportType = road,
+            overridingTransportType = railroad,
+            tileFilter = { tile -> tile.hasConnection(civInfo) }
         )
     }
 
     private fun checkRailroad(cityToConnectFrom: City) {
         check(
-                cityToConnectFrom,
-                transportType = railroad,
-                tileFilter = { tile -> tile.getUnpillagedRoad() == RoadStatus.Railroad }
+            cityToConnectFrom,
+            transportType = railroad,
+            tileFilter = { tile -> tile.getUnpillagedRoad() == RoadStatus.Railroad }
         )
     }
 
     private fun checkHarbor(cityToConnectFrom: City) {
         check(
-                cityToConnectFrom,
-                transportType = if(cityToConnectFrom.wasPreviouslyReached(railroad,null)) harborFromRailroad else harborFromRoad,
-                overridingTransportType = harborFromRailroad,
-                tileFilter = { tile -> tile.isWater },
-                cityFilter = { city -> city.civ == civInfo && city.containsHarbor() && !city.isBlockaded() } // use only own harbors
+            cityToConnectFrom,
+            transportType = if(cityToConnectFrom.wasPreviouslyReached(railroad,null)) harborFromRailroad else harborFromRoad,
+            overridingTransportType = harborFromRailroad,
+            tileFilter = { tile -> tile.isWater },
+            cityFilter = { city -> city.civ == civInfo && city.containsHarbor() && !city.isBlockaded() } // use only own harbors
         )
     }
 
-    private fun City.containsHarbor() =
-            this.cityConstructions.builtBuildingUniqueMap.getUniques(UniqueType.ConnectTradeRoutes).any()
+    private fun City.containsHarbor() = 
+        this.containsBuildingUnique(UniqueType.ConnectTradeRoutes)
 
     private fun check(cityToConnectFrom: City,
                       transportType: String,
@@ -133,10 +135,10 @@ class CapitalConnectionsFinder(private val civInfo: Civilization) {
 
     private fun canEnterBordersOf(otherCiv: Civilization): Boolean {
         if (otherCiv == civInfo) return true // own borders are always open
-        if (otherCiv.isBarbarian() || civInfo.isBarbarian()) return false // barbarians blocks the routes
+        if (otherCiv.isBarbarian || civInfo.isBarbarian) return false // barbarians blocks the routes
         val diplomacyManager = civInfo.diplomacy[otherCiv.civName]
             ?: return false // not encountered yet
-        if (otherCiv.isCityState() && diplomacyManager.diplomaticStatus != DiplomaticStatus.War) return true
+        if (otherCiv.isCityState && diplomacyManager.diplomaticStatus != DiplomaticStatus.War) return true
         return diplomacyManager.hasOpenBorders
     }
 

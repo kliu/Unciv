@@ -3,53 +3,69 @@ package com.unciv.models.ruleset
 import com.unciv.logic.city.City
 import com.unciv.logic.city.CityConstructions
 import com.unciv.logic.civilization.Civilization
+import com.unciv.models.Counter
 import com.unciv.models.ruleset.unique.IHasUniques
 import com.unciv.models.ruleset.unique.StateForConditionals
 import com.unciv.models.ruleset.unique.Unique
 import com.unciv.models.ruleset.unique.UniqueType
 import com.unciv.models.stats.INamed
 import com.unciv.models.stats.Stat
-import com.unciv.ui.components.Fonts
+import com.unciv.models.stats.Stat.Companion.statsUsableToBuy
 import com.unciv.ui.components.extensions.toPercent
+import com.unciv.ui.components.fonts.Fonts
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
 interface IConstruction : INamed {
     fun isBuildable(cityConstructions: CityConstructions): Boolean
     fun shouldBeDisplayed(cityConstructions: CityConstructions): Boolean
-    /** Gets *per turn* resource requirements - does not include immediate costs for stockpiled resources */
-    fun getResourceRequirementsPerTurn(): HashMap<String,Int>
-    fun requiresResource(resource: String): Boolean
+    /** Gets *per turn* resource requirements - does not include immediate costs for stockpiled resources.
+     * Uses [state] to determine which civ or city this is built for*/
+    fun getResourceRequirementsPerTurn(state: StateForConditionals? = null): Counter<String>
+    fun requiredResources(state: StateForConditionals = StateForConditionals.EmptyState): Set<String>
     /** We can't call this getMatchingUniques because then it would conflict with IHasUniques */
-    fun getMatchingUniquesNotConflicting(uniqueType: UniqueType) = sequenceOf<Unique>()
+    fun getMatchingUniquesNotConflicting(uniqueType: UniqueType, stateForConditionals: StateForConditionals) = sequenceOf<Unique>()
 }
 
 interface INonPerpetualConstruction : IConstruction, INamed, IHasUniques {
     var cost: Int
     val hurryCostModifier: Int
+    // Future development should not increase the role of requiredTech, and should reduce it when possible.
+    // https://yairm210.github.io/Unciv/Developers/Translations%2C-mods%2C-and-modding-freedom-in-Open-Source#filters
     var requiredTech: String?
 
-    fun getProductionCost(civInfo: Civilization): Int
+    override fun legacyRequiredTechs(): Sequence<String> = if (requiredTech == null) emptySequence() else sequenceOf(requiredTech!!)
+
+    fun getProductionCost(civInfo: Civilization, city: City?): Int
     fun getStatBuyCost(city: City, stat: Stat): Int?
     fun getRejectionReasons(cityConstructions: CityConstructions): Sequence<RejectionReason>
 
-    /** Returns whether was successful - can fail for units if we can't place them */
-    fun postBuildEvent(cityConstructions: CityConstructions, boughtWith: Stat? = null): Boolean  // Yes I'm hilarious.
-
     /** Only checks if it has the unique to be bought with this stat, not whether it is purchasable at all */
     fun canBePurchasedWithStat(city: City?, stat: Stat): Boolean {
-        if (stat == Stat.Production || stat == Stat.Happiness) return false
-        if (hasUnique(UniqueType.CannotBePurchased)) return false
-        if (stat == Stat.Gold) return !hasUnique(UniqueType.Unbuildable)
+        return canBePurchasedWithStatReasons(city, stat).purchasable
+    }
+
+    /** Only checks if it has the unique to be bought with this stat, not whether it is purchasable at all */
+    fun canBePurchasedWithStatReasons(city: City?, stat: Stat): PurchaseReason {
+        val stateForConditionals = city?.state ?: StateForConditionals.EmptyState
+        if (stat == Stat.Production || stat == Stat.Happiness) return PurchaseReason.Invalid
+        if (hasUnique(UniqueType.CannotBePurchased, stateForConditionals)) return PurchaseReason.Unpurchasable
         // Can be purchased with [Stat] [cityFilter]
-        if (city != null && getMatchingUniques(UniqueType.CanBePurchasedWithStat)
-            .any { it.params[0] == stat.name && city.matchesFilter(it.params[1]) }
-        ) return true
+        if (getMatchingUniques(UniqueType.CanBePurchasedWithStat, StateForConditionals.IgnoreConditionals)
+            .any {
+                it.params[0] == stat.name &&
+                    (city == null || (it.conditionalsApply(stateForConditionals) && city.matchesFilter(it.params[1])))
+            }
+        ) return PurchaseReason.UniqueAllowed
         // Can be purchased for [amount] [Stat] [cityFilter]
-        if (city != null && getMatchingUniques(UniqueType.CanBePurchasedForAmountStat)
-            .any { it.params[1] == stat.name && city.matchesFilter(it.params[2]) }
-        ) return true
-        return false
+        if (getMatchingUniques(UniqueType.CanBePurchasedForAmountStat, StateForConditionals.IgnoreConditionals)
+            .any {
+                it.params[1] == stat.name &&
+                    (city == null || (it.conditionalsApply(stateForConditionals) && city.matchesFilter(it.params[2])))
+            }
+        ) return PurchaseReason.UniqueAllowed
+        if (stat == Stat.Gold && !hasUnique(UniqueType.Unbuildable, stateForConditionals)) return PurchaseReason.Allowed
+        return PurchaseReason.NotAllowed
     }
 
     /** Checks if the construction should be purchasable, not whether it can be bought with a stat at all */
@@ -59,29 +75,34 @@ interface INonPerpetualConstruction : IConstruction, INamed, IHasUniques {
     }
 
     fun canBePurchasedWithAnyStat(city: City): Boolean {
-        return Stat.values().any { canBePurchasedWithStat(city, it) }
+        return statsUsableToBuy.any { canBePurchasedWithStat(city, it) }
     }
 
-    fun getBaseGoldCost(civInfo: Civilization): Double {
+    fun getCivilopediaGoldCost(): Int {
+        // Same as getBaseGoldCost, but without game-specific modifiers
+        return ((30.0 * cost.toFloat()).pow(0.75) * hurryCostModifier.toPercent() / 10).toInt() * 10
+    }
+
+    fun getBaseGoldCost(civInfo: Civilization, city: City?): Double {
         // https://forums.civfanatics.com/threads/rush-buying-formula.393892/
-        return (30.0 * getProductionCost(civInfo)).pow(0.75) * hurryCostModifier.toPercent()
+        return (30.0 * getProductionCost(civInfo, city)).pow(0.75) * hurryCostModifier.toPercent()
     }
 
-    fun getBaseBuyCost(city: City, stat: Stat): Int? {
-        if (stat == Stat.Gold) return getBaseGoldCost(city.civ).toInt()
-
-        val conditionalState = StateForConditionals(civInfo = city.civ, city = city)
+    fun getBaseBuyCost(city: City, stat: Stat): Float? {
+        val conditionalState = city.state
 
         // Can be purchased for [amount] [Stat] [cityFilter]
         val lowestCostUnique = getMatchingUniques(UniqueType.CanBePurchasedForAmountStat, conditionalState)
             .filter { it.params[1] == stat.name && city.matchesFilter(it.params[2]) }
             .minByOrNull { it.params[0].toInt() }
-        if (lowestCostUnique != null) return lowestCostUnique.params[0].toInt()
+        if (lowestCostUnique != null) return lowestCostUnique.params[0].toInt() * city.civ.gameInfo.speed.statCostModifiers[stat]!!
+
+        if (stat == Stat.Gold) return getBaseGoldCost(city.civ, city).toFloat()
 
         // Can be purchased with [Stat] [cityFilter]
         if (getMatchingUniques(UniqueType.CanBePurchasedWithStat, conditionalState)
             .any { it.params[0] == stat.name && city.matchesFilter(it.params[1]) }
-        ) return city.civ.getEra().baseUnitBuyCost
+        ) return city.civ.getEra().baseUnitBuyCost * city.civ.gameInfo.speed.statCostModifiers[stat]!!
         return null
     }
 
@@ -89,10 +110,24 @@ interface INonPerpetualConstruction : IConstruction, INamed, IHasUniques {
         return (baseCost + increaseCost / 2f * ( previouslyBought * previouslyBought + previouslyBought )).toInt()
     }
 
-    override fun getMatchingUniquesNotConflicting(uniqueType: UniqueType): Sequence<Unique> =
-            getMatchingUniques(uniqueType)
+    override fun getMatchingUniquesNotConflicting(uniqueType: UniqueType, stateForConditionals: StateForConditionals): Sequence<Unique> =
+            getMatchingUniques(uniqueType, stateForConditionals)
+
+    override fun requiredResources(state: StateForConditionals): Set<String> {
+        return getResourceRequirementsPerTurn(state).keys +
+                getMatchingUniques(UniqueType.CostsResources, state).map { it.params[1] }
+    }
 }
 
+enum class PurchaseReason(val purchasable: Boolean) {
+    Allowed(true),
+    Invalid(false),
+    Unpurchasable(false),
+    UniqueAllowed(true),
+    Other(false),
+    OtherAllowed(true),
+    NotAllowed(false)
+}
 
 
 class RejectionReason(val type: RejectionReasonType,
@@ -105,40 +140,68 @@ class RejectionReason(val type: RejectionReasonType,
 
     fun isImportantRejection(): Boolean = type in orderedImportantRejectionTypes
 
+    fun isConstructionRejection(): Boolean = type in constructionRejectionReasonType
+
+    fun isNeverVisible(): Boolean = type in neverVisible
+
     /** Returns the index of [orderedImportantRejectionTypes] with the smallest index having the
      * highest precedence */
     fun getRejectionPrecedence(): Int {
         return orderedImportantRejectionTypes.indexOf(type)
     }
 
-    // Used for constant variables in the functions above
-    private val techPolicyEraWonderRequirements = hashSetOf(
-        RejectionReasonType.Obsoleted,
-        RejectionReasonType.RequiresTech,
-        RejectionReasonType.RequiresPolicy,
-        RejectionReasonType.MorePolicyBranches,
-        RejectionReasonType.RequiresBuildingInSomeCity,
-    )
-    private val reasonsToDefinitivelyRemoveFromQueue = hashSetOf(
-        RejectionReasonType.Obsoleted,
-        RejectionReasonType.WonderAlreadyBuilt,
-        RejectionReasonType.NationalWonderAlreadyBuilt,
-        RejectionReasonType.CannotBeBuiltWith,
-        RejectionReasonType.MaxNumberBuildable,
-    )
-    private val orderedImportantRejectionTypes = listOf(
-        RejectionReasonType.WonderBeingBuiltElsewhere,
-        RejectionReasonType.NationalWonderBeingBuiltElsewhere,
-        RejectionReasonType.RequiresBuildingInAllCities,
-        RejectionReasonType.RequiresBuildingInThisCity,
-        RejectionReasonType.RequiresBuildingInSomeCity,
-        RejectionReasonType.CannotBeBuiltUnhappiness,
-        RejectionReasonType.PopulationRequirement,
-        RejectionReasonType.ConsumesResources,
-        RejectionReasonType.CanOnlyBePurchased,
-        RejectionReasonType.MaxNumberBuildable,
-        RejectionReasonType.NoPlaceToPutUnit,
-    )
+    companion object {
+        // Used for constant variables in the functions above
+        private val techPolicyEraWonderRequirements = hashSetOf(
+            RejectionReasonType.Obsoleted,
+            RejectionReasonType.RequiresTech,
+            RejectionReasonType.RequiresPolicy,
+            RejectionReasonType.MorePolicyBranches,
+            RejectionReasonType.RequiresBuildingInSomeCity,
+        )
+        private val reasonsToDefinitivelyRemoveFromQueue = hashSetOf(
+            RejectionReasonType.Obsoleted,
+            RejectionReasonType.WonderAlreadyBuilt,
+            RejectionReasonType.NationalWonderAlreadyBuilt,
+            RejectionReasonType.CannotBeBuiltWith,
+            RejectionReasonType.MaxNumberBuildable,
+        )
+        private val orderedImportantRejectionTypes = listOf(
+            RejectionReasonType.ShouldNotBeDisplayed,
+            RejectionReasonType.WonderBeingBuiltElsewhere,
+            RejectionReasonType.RequiresBuildingInAllCities,
+            RejectionReasonType.RequiresBuildingInThisCity,
+            RejectionReasonType.RequiresBuildingInSomeCity,
+            RejectionReasonType.RequiresBuildingInSomeCities,
+            RejectionReasonType.CanOnlyBeBuiltInSpecificCities,
+            RejectionReasonType.CannotBeBuiltUnhappiness,
+            RejectionReasonType.PopulationRequirement,
+            RejectionReasonType.ConsumesResources,
+            RejectionReasonType.CanOnlyBePurchased,
+            RejectionReasonType.MaxNumberBuildable,
+            RejectionReasonType.NoPlaceToPutUnit,
+        )
+        // Exceptions. Used for units spawned/upgrade path, not built
+        private val constructionRejectionReasonType = listOf(
+            RejectionReasonType.Unbuildable,
+            RejectionReasonType.CannotBeBuiltUnhappiness,
+            RejectionReasonType.CannotBeBuilt,
+            RejectionReasonType.CanOnlyBeBuiltInSpecificCities,
+        )
+        private val neverVisible = listOf(
+            RejectionReasonType.AlreadyBuilt,
+            RejectionReasonType.WonderAlreadyBuilt,
+            RejectionReasonType.NationalWonderAlreadyBuilt,
+            RejectionReasonType.DisabledBySetting,
+            RejectionReasonType.UniqueToOtherNation,
+            RejectionReasonType.ReplacedByOurUnique,
+            RejectionReasonType.Obsoleted,
+            RejectionReasonType.WonderBeingBuiltElsewhere,
+            RejectionReasonType.RequiresTech,
+            RejectionReasonType.NoSettlerForOneCityPlayers,
+            RejectionReasonType.WaterUnitsInCoastalCities,
+        )
+    }
 }
 
 
@@ -157,7 +220,7 @@ enum class RejectionReasonType(val shouldShow: Boolean, val errorMessage: String
     MustNotBeNextToTile(false, "Must not be next to a specific tile"),
     MustOwnTile(false, "Must own a specific tile close by"),
     WaterUnitsInCoastalCities(false, "May only built water units in coastal cities"),
-    CanOnlyBeBuiltInSpecificCities(false, "Can only be built in specific cities"),
+    CanOnlyBeBuiltInSpecificCities(false, "Build requirements not met in this city"),
     MaxNumberBuildable(false, "Maximum number have been built or are being constructed"),
 
     UniqueToOtherNation(false, "Unique to another nation"),
@@ -182,9 +245,8 @@ enum class RejectionReasonType(val shouldShow: Boolean, val errorMessage: String
     WonderAlreadyBuilt(false, "Wonder already built"),
     NationalWonderAlreadyBuilt(false, "National Wonder already built"),
     WonderBeingBuiltElsewhere(true, "Wonder is being built elsewhere"),
-    NationalWonderBeingBuiltElsewhere(true, "National Wonder is being built elsewhere"),
     CityStateWonder(false, "No Wonders for city-states"),
-    CityStateNationalWonder(false, "No National Wonders for city-states"),
+    PuppetWonder(false, "No Wonders for Puppets"),
     WonderDisabledEra(false, "This Wonder is disabled when starting in this era"),
 
     ConsumesResources(true, "Consumes resources which you are lacking"),
@@ -194,12 +256,14 @@ enum class RejectionReasonType(val shouldShow: Boolean, val errorMessage: String
     NoSettlerForOneCityPlayers(false, "No settlers for city-states or one-city challengers"),
     NoPlaceToPutUnit(true, "No space to place this unit");
 
+    val defaultInstance by lazy { RejectionReason(this, errorMessage, shouldShow) }
+    fun toInstance() = defaultInstance
+
     fun toInstance(errorMessage: String = this.errorMessage,
         shouldShow: Boolean = this.shouldShow): RejectionReason {
         return RejectionReason(this, errorMessage, shouldShow)
     }
 }
-
 
 open class PerpetualConstruction(override var name: String, val description: String) :
     IConstruction {
@@ -218,15 +282,17 @@ open class PerpetualConstruction(override var name: String, val description: Str
 
         val perpetualConstructionsMap: Map<String, PerpetualConstruction>
                 = mapOf(science.name to science, gold.name to gold, culture.name to culture, faith.name to faith, idle.name to idle)
+
+        /** @return whether [name] represents a PerpetualConstruction - note "" is translated to Nothing in the queue so `isNamePerpetual("")==true` */
+        fun isNamePerpetual(name: String) = name.isEmpty() || name in perpetualConstructionsMap
     }
 
     override fun isBuildable(cityConstructions: CityConstructions): Boolean =
             throw Exception("Impossible!")
 
-    override fun getResourceRequirementsPerTurn(): HashMap<String, Int> = hashMapOf()
+    override fun getResourceRequirementsPerTurn(state: StateForConditionals?) = Counter.ZERO
 
-    override fun requiresResource(resource: String) = false
-
+    override fun requiredResources(state: StateForConditionals): Set<String> = emptySet()
 }
 
 open class PerpetualStatConversion(val stat: Stat) :
@@ -241,7 +307,7 @@ open class PerpetualStatConversion(val stat: Stat) :
         if (stat == Stat.Faith && !city.civ.gameInfo.isReligionEnabled())
             return false
 
-        val stateForConditionals = StateForConditionals(city.civ, city, tile = city.getCenterTile())
+        val stateForConditionals = city.state
         return city.civ.getMatchingUniques(UniqueType.EnablesCivWideStatProduction, stateForConditionals)
             .any { it.params[0] == stat.name }
     }

@@ -1,8 +1,10 @@
 package com.unciv.ui.screens.overviewscreen
 
 import com.badlogic.gdx.graphics.Color
+import com.badlogic.gdx.math.Vector2
 import com.badlogic.gdx.scenes.scene2d.Actor
 import com.badlogic.gdx.scenes.scene2d.Group
+import com.badlogic.gdx.scenes.scene2d.Stage
 import com.badlogic.gdx.scenes.scene2d.Touchable
 import com.badlogic.gdx.scenes.scene2d.ui.Table
 import com.badlogic.gdx.scenes.scene2d.ui.TextButton
@@ -15,32 +17,41 @@ import com.unciv.logic.civilization.diplomacy.DiplomaticStatus
 import com.unciv.logic.civilization.diplomacy.RelationshipLevel
 import com.unciv.logic.map.HexMath
 import com.unciv.models.ruleset.Policy.PolicyBranchType
-import com.unciv.ui.components.AutoScrollPane
-import com.unciv.ui.components.ColorMarkupLabel
-import com.unciv.ui.components.Fonts
+import com.unciv.models.ruleset.nation.getContrastRatio
+import com.unciv.models.ruleset.unique.UniqueType
+import com.unciv.models.translations.tr
 import com.unciv.ui.components.UncivTooltip.Companion.addTooltip
 import com.unciv.ui.components.extensions.addBorder
 import com.unciv.ui.components.extensions.addSeparator
 import com.unciv.ui.components.extensions.addSeparatorVertical
 import com.unciv.ui.components.extensions.center
-import com.unciv.ui.components.extensions.onClick
+import com.unciv.ui.components.extensions.equalizeColumns
 import com.unciv.ui.components.extensions.toLabel
 import com.unciv.ui.components.extensions.toTextButton
+import com.unciv.ui.components.fonts.Fonts
+import com.unciv.ui.components.input.ClickableCircle
+import com.unciv.ui.components.input.onActivation
+import com.unciv.ui.components.input.onClick
+import com.unciv.ui.components.widgets.AutoScrollPane
+import com.unciv.ui.components.widgets.ColorMarkupLabel
+import com.unciv.ui.components.widgets.ShadowedLabel
 import com.unciv.ui.images.ImageGetter
+import com.unciv.ui.popups.AnimatedMenuPopup
 import com.unciv.ui.screens.basescreen.BaseScreen
 import com.unciv.ui.screens.diplomacyscreen.DiplomacyScreen
 import kotlin.math.roundToInt
 
-class GlobalPoliticsOverviewTable (
+class GlobalPoliticsOverviewTable(
     viewingPlayer: Civilization,
     overviewScreen: EmpireOverviewScreen,
     persistedData: EmpireOverviewTabPersistableData? = null
 ) : EmpireOverviewTab(viewingPlayer, overviewScreen) {
 
     class DiplomacyTabPersistableData(
+        var showDiagram: Boolean = false,
         var includeCityStates: Boolean = false
     ) : EmpireOverviewTabPersistableData() {
-        override fun isEmpty() = !includeCityStates
+        override fun isEmpty() = !showDiagram && !includeCityStates
     }
     override val persistableData = (persistedData as? DiplomacyTabPersistableData) ?: DiplomacyTabPersistableData()
 
@@ -50,29 +61,45 @@ class GlobalPoliticsOverviewTable (
         defaults().pad(5f)
         background = BaseScreen.skinStrings.getUiBackground(
             "OverviewScreen/DiplomacyOverviewTab/CivTable",
-            tintColor = Color.BLACK
+            tintColor = ImageGetter.CHARCOAL
         )
     }
 
     // Reusable sequences for the Civilizations to display
-    private var undefeatedCivs = sequenceOf<Civilization>()
-    private var defeatedCivs = sequenceOf<Civilization>()
+    private var undefeatedCivs = listOf<Civilization>()
+    private var defeatedCivs = listOf<Civilization>()
 
-    private var relevantCivsCount = 0  // includes unknown civs
+    private var relevantCivsCount = "?"  // includes unknown civs if player allowed to know
     private var showDiplomacyGroup = false
     private var portraitMode = false
 
 
     init {
-        updatePoliticsTable()
+        top()
+        if (persistableData.showDiagram) updateDiagram()
+        else updatePoliticsTable()
     }
 
-    private fun updatePoliticsTable() {
-        clear()
-        getFixedContent().clear()
+    override fun getFixedContent() = fixedContent
 
+    //region Politics Table View
+
+    private fun updatePoliticsTable() {
+        persistableData.showDiagram = false
+        createGlobalPoliticsHeader()
+        createGlobalPoliticsTable()
+        equalizeColumns(fixedContent, this)
+    }
+
+    /** Clears fixedContent and adds the header cells.
+     *  Needs to stay matched to [createGlobalPoliticsTable].
+     *
+     *  9 Columns: 5 info, 4 separators. The first column gets an empty header, the content below is the civ image
+     */
+    private fun createGlobalPoliticsHeader() = fixedContent.run {
         val diagramButton = "Show diagram".toTextButton().onClick(::updateDiagram)
 
+        clear()
         add()
         addSeparatorVertical(Color.GRAY)
         add("Civilization Info".toLabel())
@@ -82,21 +109,23 @@ class GlobalPoliticsOverviewTable (
         add("Wonders".toLabel())
         addSeparatorVertical(Color.GRAY)
         add(Table().apply {
-            add("Relations".toLabel()).row()
+            add("Relations".toLabel()).padTop(10f).row()
             add(diagramButton).pad(10f)
         })
-        row()
         addSeparator(Color.GRAY)
-
-        createGlobalPoliticsTable()
     }
 
+    /** Clears [EmpireOverviewTab]'s main Table and adds data columns/rows.
+     *  Needs to stay matched to [createGlobalPoliticsHeader].
+     */
     private fun createGlobalPoliticsTable() {
-        val civilizations = mutableListOf<Civilization>()
-        civilizations.add(viewingPlayer)
-        civilizations.addAll(viewingPlayer.getKnownCivs())
-        civilizations.removeAll(civilizations.filter { it.isBarbarian() || it.isCityState() || it.isSpectator() })
-        for (civ in civilizations) {
+        clear()
+
+        for (civ in sequenceOf(viewingPlayer) + viewingPlayer.diplomacyFunctions.getKnownCivsSorted(includeCityStates = false)) {
+            // We already have a separator under the fixed header, we only need them here between rows.
+            // This is also the replacement for calling row() explicitly
+            if (cells.size > 0) addSeparator(Color.GRAY)
+
             // civ image
             add(ImageGetter.getNationPortrait(civ.nation, 100f)).pad(20f)
 
@@ -119,9 +148,6 @@ class GlobalPoliticsOverviewTable (
 
             //politics
             add(getPoliticsOfCivTable(civ)).pad(20f)
-
-            if (civilizations.indexOf(civ) != civilizations.lastIndex)
-                addSeparator(Color.GRAY)
         }
     }
 
@@ -181,6 +207,11 @@ class GlobalPoliticsOverviewTable (
         if (!viewingPlayer.knows(civ) && civ.civName != viewingPlayer.civName)
             return politicsTable
 
+        if (civ.isDefeated()) {
+            politicsTable.add("{Defeated} ${Fonts.death}".toLabel())
+            return politicsTable
+        }
+
         // wars
         for (otherCiv in civ.getKnownCivs()) {
             if (civ.isAtWarWith(otherCiv)) {
@@ -190,9 +221,14 @@ class GlobalPoliticsOverviewTable (
         }
         politicsTable.row()
 
-        // declaration of friendships
+        // defensive pacts and declaration of friendships
         for (otherCiv in civ.getKnownCivs()) {
-            if (civ.diplomacy[otherCiv.civName]?.hasFlag(DiplomacyFlags.DeclarationOfFriendship) == true) {
+            if (civ.diplomacy[otherCiv.civName]?.hasFlag(DiplomacyFlags.DefensivePact) == true) {
+                val friendText = ColorMarkupLabel("Defensive pact with [${getCivName(otherCiv)}]", Color.CYAN)
+                val turnsLeftText = " (${civ.diplomacy[otherCiv.civName]?.getFlag(DiplomacyFlags.DefensivePact)} ${Fonts.turn})".toLabel()
+                politicsTable.add(friendText)
+                politicsTable.add(turnsLeftText).row()
+            } else if (civ.diplomacy[otherCiv.civName]?.hasFlag(DiplomacyFlags.DeclarationOfFriendship) == true) {
                 val friendText = ColorMarkupLabel("Friends with [${getCivName(otherCiv)}]", Color.GREEN)
                 val turnsLeftText = " (${civ.diplomacy[otherCiv.civName]?.getFlag(DiplomacyFlags.DeclarationOfFriendship)} ${Fonts.turn})".toLabel()
                 politicsTable.add(friendText)
@@ -215,7 +251,7 @@ class GlobalPoliticsOverviewTable (
         //allied CS
         for (cityState in gameInfo.getAliveCityStates()) {
             if (cityState.diplomacy[civ.civName]?.isRelationshipLevelEQ(RelationshipLevel.Ally) == true) {
-                val alliedText = ColorMarkupLabel("Allied with [${getCivName(cityState)}]", Color.GREEN)
+                val alliedText = ColorMarkupLabel("Allied with [${getCivName(cityState)}]", Color.CYAN)
                 politicsTable.add(alliedText).row()
             }
         }
@@ -223,11 +259,16 @@ class GlobalPoliticsOverviewTable (
         return politicsTable
     }
 
-    override fun getFixedContent() = fixedContent
+    //endregion
+    //region Diagram View ("Ball of Yarn")
 
     // Refresh content and determine landscape/portrait layout
     private fun updateDiagram() {
-        val politicsButton = "Show global politics".toTextButton().onClick(::updatePoliticsTable)
+        persistableData.showDiagram = true
+        val politicsButton = "Show global politics".toTextButton().onClick {
+            updatePoliticsTable()
+            overviewScreen.resizePage(this)  // Or else the header stays curernt size, which with any non-empty diagram is most of the client area
+        }
 
         val toggleCityStatesButton: TextButton = Constants.cityStates.toTextButton().apply {
             onClick {
@@ -245,13 +286,16 @@ class GlobalPoliticsOverviewTable (
             add(civTableScroll.addBorder(2f, Color.WHITE)).pad(10f)
         }
 
-        relevantCivsCount = gameInfo.civilizations.count {
-            !it.isSpectator() && !it.isBarbarian() && (persistableData.includeCityStates || !it.isCityState())
-        }
-        undefeatedCivs = sequenceOf(viewingPlayer) +
+        val hideCivsCount = viewingPlayer.hideCivCount() ||
+            persistableData.includeCityStates && viewingPlayer.hideCityStateCount()
+        relevantCivsCount = if (hideCivsCount) "?"
+            else gameInfo.civilizations.count {
+                !it.isSpectator() && !it.isBarbarian && (persistableData.includeCityStates || !it.isCityState)
+            }.tr()
+        undefeatedCivs = listOf(viewingPlayer) +
                 viewingPlayer.diplomacyFunctions.getKnownCivsSorted(persistableData.includeCityStates)
         defeatedCivs = viewingPlayer.diplomacyFunctions.getKnownCivsSorted(persistableData.includeCityStates, true)
-            .filter { it.isDefeated() }
+            .filter { it.isDefeated() }.toList()
 
         clear()
         fixedContent.clear()
@@ -289,6 +333,15 @@ class GlobalPoliticsOverviewTable (
         civTableScroll.setScrollingDisabled(portraitMode, portraitMode)
     }
 
+    /** Same as [Civilization.hideCivCount] but for City-States instead of Major Civs */
+    private fun Civilization.hideCityStateCount(): Boolean {
+        if (!gameInfo.gameParameters.randomNumberOfCityStates) return false
+        val knownCivs = 1 + getKnownCivs().count { it.isCityState }
+        if (knownCivs >= gameInfo.gameParameters.maxNumberOfCityStates) return false
+        if (hasUnique(UniqueType.OneTimeRevealEntireMap)) return false
+        return true
+    }
+
     private fun updateCivTable(columns: Int) = civTable.apply {
         clear()
         addTitleInfo(columns)
@@ -313,18 +366,21 @@ class GlobalPoliticsOverviewTable (
         add("[$relevantCivsCount] Civilizations in the game".toLabel()).colspan(columns).row()
         add("Our Civilization:".toLabel()).colspan(columns).left().padLeft(10f).padTop(10f).row()
         add(getCivMiniTable(viewingPlayer)).left()
-        add(viewingPlayer.calculateTotalScore().toInt().toLabel()).left().row()
+        val scoreText = if (viewingPlayer.isDefeated()) Fonts.death.toString()
+            else viewingPlayer.calculateTotalScore().toInt().tr()
+        add(scoreText.toLabel()).left().row()
         val turnsTillNextDiplomaticVote = viewingPlayer.getTurnsTillNextDiplomaticVote() ?: return
         add("Turns until the next\ndiplomacy victory vote: [$turnsTillNextDiplomaticVote]".toLabel()).colspan(columns).row()
     }
 
-    private fun Table.addCivsCategory(columns: Int, aliveOrDefeated: String, civs: Sequence<Civilization>) {
+    private fun Table.addCivsCategory(columns: Int, aliveOrDefeated: String, civs: List<Civilization>) {
         addSeparator()
         val count = civs.count()
         add("Known and $aliveOrDefeated ([$count])".toLabel())
             .pad(5f).colspan(columns).row()
         if (count == 0) return
         addSeparator()
+
         var currentColumn = 0
         var lastCivWasMajor = false
         fun advanceCols(delta: Int) {
@@ -335,11 +391,12 @@ class GlobalPoliticsOverviewTable (
             }
             lastCivWasMajor = delta == 2
         }
+
         for (civ in civs) {
-            if (lastCivWasMajor && civ.isCityState())
+            if (lastCivWasMajor && civ.isCityState)
                 advanceCols(columns)
             add(getCivMiniTable(civ)).left()
-            if (civ.isCityState()) {
+            if (civ.isCityState) {
                 advanceCols(1)
             } else {
                 add(civ.calculateTotalScore().toInt().toLabel()).left()
@@ -348,9 +405,12 @@ class GlobalPoliticsOverviewTable (
         }
     }
 
-    /** This is the 'spider net'-like polygon showing one line per civ-civ relation */
+    /** This is the 'spider net'-like polygon showing one line per civ-civ relation
+     *  @param undefeatedCivs Civs to display - note the viewing player is always included, so it's possible the name is off and there's a dead civ included.
+     *  @param freeSize Width and height this [Group] sizes itself to
+     */
     private class DiplomacyGroup(
-        undefeatedCivs: Sequence<Civilization>,
+        undefeatedCivs: List<Civilization>,
         freeSize: Float
     ): Group() {
         private fun onCivClicked(civLines: HashMap<String, MutableSet<Actor>>, name: String) {
@@ -389,6 +449,16 @@ class GlobalPoliticsOverviewTable (
 
         init {
             setSize(freeSize, freeSize)
+
+            // An Image Actor does not respect alpha for its hit area, it's always square, but we want a clickable _circle_
+            // Radius to show legend should be no larger than freeSize / 2.25f - 15f (see below), let's make it a little smaller
+            val clickableArea = ClickableCircle(freeSize / 1.25f - 25f)
+            clickableArea.onActivation {
+                DiagramLegendPopup(stage, this)
+            }
+            clickableArea.center(this)
+            addActor(clickableArea)
+
             val civGroups = HashMap<String, Actor>()
             val civLines = HashMap<String, MutableSet<Actor>>()
             val civCount = undefeatedCivs.count()
@@ -409,9 +479,11 @@ class GlobalPoliticsOverviewTable (
                 addActor(civGroup)
             }
 
-            for (civ in undefeatedCivs)
+            for (civ in undefeatedCivs) {
+                if (civ.isDefeated()) continue // if you're dead, icon but no lines (One more turn mode after losing)
                 for (diplomacy in civ.diplomacy.values) {
-                    if (diplomacy.otherCiv() !in undefeatedCivs) continue
+                    val otherCiv = diplomacy.otherCiv()
+                    if (otherCiv !in undefeatedCivs || otherCiv.isDefeated()) continue
                     val civGroup = civGroups[civ.civName]!!
                     val otherCivGroup = civGroups[diplomacy.otherCivName]!!
 
@@ -420,9 +492,14 @@ class GlobalPoliticsOverviewTable (
                         startY = civGroup.y + civGroup.height / 2,
                         endX = otherCivGroup.x + otherCivGroup.width / 2,
                         endY = otherCivGroup.y + otherCivGroup.height / 2,
-                        width = 2f)
+                        width = 2f
+                    )
 
                     statusLine.color = if (diplomacy.diplomaticStatus == DiplomaticStatus.War) Color.RED
+                    else if (diplomacy.diplomaticStatus == DiplomaticStatus.DefensivePact
+                        || (diplomacy.civInfo.isCityState && diplomacy.civInfo.getAllyCiv() == diplomacy.otherCivName)
+                        || (otherCiv.isCityState && otherCiv.getAllyCiv() == diplomacy.civInfo.civName)
+                    ) Color.CYAN
                     else diplomacy.relationshipLevel().color
 
                     if (!civLines.containsKey(civ.civName)) civLines[civ.civName] = mutableSetOf()
@@ -430,6 +507,51 @@ class GlobalPoliticsOverviewTable (
 
                     addActorAt(0, statusLine)
                 }
+            }
+
         }
     }
+
+    private class DiagramLegendPopup(stage: Stage, diagram: Actor) : AnimatedMenuPopup(stage, diagram.getCenterInStageCoordinates()) {
+        init {
+            touchable = Touchable.enabled
+            onActivation { close() }
+        }
+
+        companion object {
+            private fun Actor.getCenterInStageCoordinates(): Vector2 = localToStageCoordinates(Vector2(width / 2, height / 2))
+
+            const val lineWidth = 3f  // a little thicker than the actual diagram
+            const val lowContrastWidth = 4f
+            const val lineLength = 120f
+        }
+
+        override fun createContentTable(): Table {
+            val legend = Table()
+            legend.background = ImageGetter.getDrawable("OtherIcons/Politics-diagram-bg")
+            legend.add(ShadowedLabel("Diagram line colors", Constants.headingFontSize)).colspan(2).row()
+            //todo Rethink hardcoding together with the statusLine.color one in DiplomacyGroup
+            legend.addLegendRow("War", Color.RED)
+            for (level in RelationshipLevel.entries) {
+                val lineColor = if (level == RelationshipLevel.Ally) Color.CYAN else level.color
+                legend.addLegendRow(level.name, lineColor)
+            }
+            legend.addLegendRow(Constants.defensivePact, Color.CYAN)
+            return super.createContentTable()!!.apply {
+                add(legend).grow()
+            }
+        }
+
+        fun Table.addLegendRow(text: String, color: Color) {
+            // empiric hack to equalize the "visual impact" a little. Afraid is worst at contrast 1.4, Enemy has 9.8
+            val contrast = getContrastRatio(Color.DARK_GRAY, color).toFloat()
+            val width = lineWidth + (lowContrastWidth - lineWidth) / contrast.coerceAtLeast(1f)
+            val line = ImageGetter.getLine(0f, width / 2, lineLength, width / 2, width)
+            line.color = color
+            add(line).size(lineLength, width).padTop(5f)
+            add(ShadowedLabel(text)).padLeft(5f).padTop(10f).row()
+        }
+    }
+
+    //endregion
 }
