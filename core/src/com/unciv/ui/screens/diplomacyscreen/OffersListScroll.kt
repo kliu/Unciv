@@ -5,30 +5,21 @@ import com.badlogic.gdx.scenes.scene2d.ui.Table
 import com.badlogic.gdx.utils.Align
 import com.unciv.Constants
 import com.unciv.UncivGame
+import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.trade.TradeOffer
+import com.unciv.logic.trade.TradeOfferType
+import com.unciv.logic.trade.TradeOfferType.*
 import com.unciv.logic.trade.TradeOffersList
-import com.unciv.logic.trade.TradeType
-import com.unciv.logic.trade.TradeType.Agreement
-import com.unciv.logic.trade.TradeType.City
-import com.unciv.logic.trade.TradeType.Gold
-import com.unciv.logic.trade.TradeType.Gold_Per_Turn
-import com.unciv.logic.trade.TradeType.Introduction
-import com.unciv.logic.trade.TradeType.Luxury_Resource
-import com.unciv.logic.trade.TradeType.Strategic_Resource
-import com.unciv.logic.trade.TradeType.Technology
-import com.unciv.logic.trade.TradeType.Treaty
-import com.unciv.logic.trade.TradeType.WarDeclaration
-import com.unciv.logic.trade.TradeType.values
 import com.unciv.models.ruleset.tile.ResourceSupplyList
 import com.unciv.models.translations.tr
-import com.unciv.ui.components.ExpanderTab
 import com.unciv.ui.components.extensions.disable
-import com.unciv.ui.components.extensions.onClick
+import com.unciv.ui.components.input.onClick
+import com.unciv.ui.components.widgets.ExpanderTab
 import com.unciv.ui.images.IconTextButton
 import com.unciv.ui.images.ImageGetter
 import com.unciv.ui.screens.basescreen.BaseScreen
 import kotlin.math.min
-import com.unciv.ui.components.AutoScrollPane as ScrollPane
+import com.unciv.ui.components.widgets.AutoScrollPane as ScrollPane
 
 /**
  * Widget for one fourth of an [OfferColumnsTable] - instantiated for ours/theirs × available/traded
@@ -42,23 +33,30 @@ class OffersListScroll(
     val table = Table(BaseScreen.skin).apply { defaults().pad(5f) }
 
 
-    private val expanderTabs = HashMap<TradeType, ExpanderTab>()
+    private val expanderTabs = HashMap<TradeOfferType, ExpanderTab>()
+
+    init {
+        fadeScrollBars=false
+        setScrollbarsVisible(true)
+    }
 
     /**
      * @param offersToDisplay The offers which should be displayed as buttons
-     * @param otherOffers The list of other side's offers to compare with whether these offers are unique
+     * @param otherSideOffers The list of other side's offers to compare with whether these offers are unique
      * @param untradableOffers Things we got from sources that we can't trade on, displayed for completeness - should be aggregated per resource to "All" origin
      */
     fun update(
         offersToDisplay: TradeOffersList,
-        otherOffers: TradeOffersList,
-        untradableOffers: ResourceSupplyList = ResourceSupplyList.emptyList
+        otherSideOffers: TradeOffersList,
+        untradableOffers: ResourceSupplyList = ResourceSupplyList.emptyList,
+        ourCiv: Civilization,
+        theirCiv: Civilization
     ) {
         table.clear()
         expanderTabs.clear()
 
-        for (offerType in values()) {
-            val labelName = when(offerType){
+        for (offerType in TradeOfferType.entries) {
+            val labelName = when(offerType) {
                 Gold, Gold_Per_Turn, Treaty, Agreement, Introduction -> ""
                 Luxury_Resource -> "Luxury resources"
                 Strategic_Resource -> "Strategic resources"
@@ -74,7 +72,7 @@ class OffersListScroll(
             }
         }
 
-        for (offerType in values()) {
+        for (offerType in TradeOfferType.entries) {
             val offersOfType = offersToDisplay.filter { it.type == offerType }
                 .sortedWith(compareBy(
                     { if (UncivGame.Current.settings.orderTradeOffersByAmount) -it.amount else 0 },
@@ -92,7 +90,7 @@ class OffersListScroll(
                     Luxury_Resource, Strategic_Resource ->
                         ImageGetter.getResourcePortrait(offer.name, 30f)
                     WarDeclaration ->
-                        ImageGetter.getNationPortrait(UncivGame.Current.gameInfo!!.ruleset.nations[offer.name]!!, 30f)
+                        ImageGetter.getNationPortrait(ourCiv.gameInfo.ruleset.nations[offer.name]!!, 30f)
                     else -> null
                 }
                 val tradeButton = IconTextButton(tradeLabel, tradeIcon).apply {
@@ -103,15 +101,20 @@ class OffersListScroll(
                 }
 
                 val amountPerClick =
-                        if (offer.type == Gold) 50
-                        else 1
+                    when (offer.type) {
+                        Gold -> 50
+                        Treaty -> Int.MAX_VALUE
+                        else -> 1
+                    }
 
-                if (offer.isTradable() && offer.name != Constants.peaceTreaty && // can't disable peace treaty!
-                        offer.name != Constants.researchAgreement) {
+                if (offer.isTradable() && offer.name != Constants.peaceTreaty // can't disable peace treaty!
+                    && (offer.name != Constants.researchAgreement // If we have a research agreement make sure the total gold of both Civs is higher than the total cost
+                        // If both civs combined can pay for the research agreement, don't disable it. One can offer the other it's gold.
+                        || (ourCiv.gold + theirCiv.gold > ourCiv.diplomacyFunctions.getResearchAgreementCost(theirCiv) * 2))) {
 
                     // highlight unique suggestions
                     if (offerType in listOf(Luxury_Resource, Strategic_Resource)
-                            && otherOffers.all { it.type != offer.type || it.name != offer.name })
+                            && otherSideOffers.all { it.type != offer.type || it.name != offer.name || it.amount < 0}) // we can 'have' negative amounts of resources 
                         tradeButton.color = Color.GREEN
 
                     tradeButton.onClick {
@@ -119,7 +122,7 @@ class OffersListScroll(
                         onOfferClicked(offer.copy(amount = amountTransferred))
                     }
                 }
-                else tradeButton.disable()  // for instance we have negative gold
+                else tradeButton.disable()  // for instance, we have negative gold
 
 
                 if (expanderTabs.containsKey(offerType))

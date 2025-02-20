@@ -5,7 +5,6 @@ import com.unciv.logic.city.CityConstructions
 import com.unciv.logic.civilization.diplomacy.DiplomacyFlags
 import com.unciv.logic.civilization.diplomacy.DiplomacyManager
 import com.unciv.logic.civilization.managers.TechManager
-import com.unciv.logic.map.tile.RoadStatus
 import com.unciv.models.ruleset.ModOptions
 import com.unciv.models.ruleset.PerpetualConstruction
 import com.unciv.models.ruleset.Ruleset
@@ -27,8 +26,28 @@ object BackwardCompatibility {
     fun GameInfo.removeMissingModReferences() {
         tileMap.removeMissingTerrainModReferences(ruleset)
 
+        removeUnitsAndPromotions()
+
+        // Mod decided you can't repair things anymore - get rid of old pillaged improvements
+        removeOldPillagedImprovements()
+        removeMissingLastSeenImprovements()
+
+        handleMissingReferencesForEachCity()
+
+        removeTechAndPolicies()
+    }
+
+    fun GameInfo.migrateGreatGeneralPools() {
+        for (civ in civilizations) civ.greatPeople.run {
+            if (pointsForNextGreatGeneral >= pointsForNextGreatGeneralCounter["Great General"]) {
+                pointsForNextGreatGeneralCounter["Great General"] = pointsForNextGreatGeneral
+            } else pointsForNextGreatGeneral = pointsForNextGreatGeneralCounter["Great General"]
+        }
+    }
+
+    private fun GameInfo.removeUnitsAndPromotions() {
         for (tile in tileMap.values) {
-            for (unit in tile.getUnits()) {
+            for (unit in tile.getUnits().toList()) {
                 if (!ruleset.units.containsKey(unit.name)) tile.removeUnit(unit)
 
                 for (promotion in unit.promotions.promotions.toList())
@@ -36,35 +55,40 @@ object BackwardCompatibility {
                         unit.promotions.promotions.remove(promotion)
             }
         }
+    }
 
-        // Mod decided you can't repair things anymore - get rid of old pillaged improvements
+    private fun GameInfo.removeOldPillagedImprovements() {
         if (!ruleset.tileImprovements.containsKey(Constants.repair))
             for (tile in tileMap.values) {
                 if (tile.roadIsPillaged) {
-                    tile.roadStatus = RoadStatus.None
-                    tile.roadIsPillaged = false
+                    tile.removeRoad()
                 }
-                if (tile.improvementIsPillaged){
+                if (tile.improvementIsPillaged) {
                     tile.improvement = null
                     tile.improvementIsPillaged = false
                 }
             }
+    }
 
+    private fun GameInfo.removeMissingLastSeenImprovements() {
+        for (civ in civilizations)
+            for ((vector,improvementName) in civ.lastSeenImprovement.toList())
+                if (!ruleset.tileImprovements.containsKey(improvementName))
+                    civ.lastSeenImprovement.remove(vector)
+    }
 
+    private fun GameInfo.handleMissingReferencesForEachCity() {
         for (city in civilizations.asSequence().flatMap { it.cities.asSequence() }) {
 
-            changeBuildingNameIfNotInRuleset(ruleset, city.cityConstructions, "Hanse", "Bank")
-
-            for (building in city.cityConstructions.builtBuildings.toHashSet()) {
-
+            for (building in city.cityConstructions.builtBuildings.toList()) {
                 if (!ruleset.buildings.containsKey(building))
                     city.cityConstructions.builtBuildings.remove(building)
             }
 
             fun isInvalidConstruction(construction: String) =
                 !ruleset.buildings.containsKey(construction)
-                        && !ruleset.units.containsKey(construction)
-                        && !PerpetualConstruction.perpetualConstructionsMap.containsKey(construction)
+                    && !ruleset.units.containsKey(construction)
+                    && !PerpetualConstruction.perpetualConstructionsMap.containsKey(construction)
 
             // Remove invalid buildings or units from the queue - don't just check buildings and units because it might be a special construction as well
             for (construction in city.cityConstructions.constructionQueue.toList()) {
@@ -76,7 +100,9 @@ object BackwardCompatibility {
                 if (isInvalidConstruction(construction))
                     city.cityConstructions.inProgressConstructions.remove(construction)
         }
+    }
 
+    private fun GameInfo.removeTechAndPolicies() {
         for (civInfo in civilizations) {
             for (tech in civInfo.tech.techsResearched.toList())
                 if (!ruleset.technologies.containsKey(tech))
@@ -100,12 +126,12 @@ object BackwardCompatibility {
         if (ruleSet.buildings.containsKey(oldBuildingName))
             return
         // Replace in built buildings
-        if (cityConstructions.builtBuildings.contains(oldBuildingName)) {
-            cityConstructions.builtBuildings.remove(oldBuildingName)
-            cityConstructions.builtBuildings.add(newBuildingName)
+        if (cityConstructions.isBuilt(oldBuildingName)) {
+            cityConstructions.removeBuilding(oldBuildingName)
+            cityConstructions.addBuilding(newBuildingName)
         }
         // Replace in construction queue
-        if (!cityConstructions.builtBuildings.contains(newBuildingName) && !cityConstructions.constructionQueue.contains(newBuildingName))
+        if (!cityConstructions.isBuilt(newBuildingName) && !cityConstructions.constructionQueue.contains(newBuildingName))
             cityConstructions.constructionQueue = cityConstructions.constructionQueue
                 .map { if (it == oldBuildingName) newBuildingName else it }
                 .toMutableList()
@@ -113,7 +139,7 @@ object BackwardCompatibility {
             cityConstructions.constructionQueue.remove(oldBuildingName)
         // Replace in in-progress constructions
         if (cityConstructions.inProgressConstructions.containsKey(oldBuildingName)) {
-            if (!cityConstructions.builtBuildings.contains(newBuildingName) && !cityConstructions.inProgressConstructions.containsKey(newBuildingName))
+            if (!cityConstructions.isBuilt(newBuildingName) && !cityConstructions.inProgressConstructions.containsKey(newBuildingName))
                 cityConstructions.inProgressConstructions[newBuildingName] = cityConstructions.inProgressConstructions[oldBuildingName]!!
             cityConstructions.inProgressConstructions.remove(oldBuildingName)
         }
@@ -151,14 +177,12 @@ object BackwardCompatibility {
     fun GameInfo.guaranteeUnitPromotions() {
         for (tileInfo in tileMap.values) for (unit in tileInfo.getUnits())
             for (startingPromo in unit.baseUnit.promotions)
-                if (startingPromo !in unit.promotions.promotions)
-                    unit.promotions.addPromotion(startingPromo, true)
+                unit.promotions.addPromotion(startingPromo, true)
     }
 
     /** Move max XP from barbarians to new home */
-    @Suppress("DEPRECATION")
-    fun ModOptions.updateDeprecations() {
-    }
+    @Suppress("DEPRECATION", "EmptyFunctionBlock")
+    fun ModOptions.updateDeprecations() { }
 
     /** Convert from Fortify X to Fortify and save off X */
     fun GameInfo.convertFortify() {
@@ -174,18 +198,19 @@ object BackwardCompatibility {
         }
     }
 
-    fun GameInfo.convertEncampmentData(){
-        if (barbarians.camps.isNotEmpty()){
-            barbarians.encampments.addAll(barbarians.camps.values)
-            barbarians.camps.clear()
-        }
-    }
-
     fun GameInfo.migrateToTileHistory() {
         if (historyStartTurn >= 0) return
         for (tile in getCities().flatMap { it.getTiles() }) {
             tile.history.recordTakeOwnership(tile)
         }
         historyStartTurn = turns
+    }
+
+    fun GameInfo.ensureUnitIds() {
+        if (lastUnitId == 0) lastUnitId = tileMap.values.asSequence()
+            .flatMap { it.getUnits() }.maxOfOrNull { it.id }?.coerceAtLeast(0) ?: 0
+        for (unit in tileMap.values.flatMap { it.getUnits() }) {
+            if (unit.id == Constants.NO_ID) unit.id = ++lastUnitId
+        }
     }
 }

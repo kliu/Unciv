@@ -1,18 +1,15 @@
 package com.unciv.ui.screens.overviewscreen
 
-import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.scenes.scene2d.Touchable
 import com.badlogic.gdx.scenes.scene2d.ui.Table
-import com.unciv.GUI
-import com.unciv.UncivGame
 import com.unciv.logic.civilization.Civilization
-import com.unciv.logic.civilization.LocationAction
 import com.unciv.logic.civilization.Notification
 import com.unciv.logic.civilization.NotificationCategory
-import com.unciv.ui.components.ColorMarkupLabel
-import com.unciv.ui.components.TabbedPager
-import com.unciv.ui.components.extensions.onClick
+import com.unciv.models.translations.tr
 import com.unciv.ui.components.extensions.toLabel
+import com.unciv.ui.components.input.onClick
+import com.unciv.ui.components.widgets.ColorMarkupLabel
+import com.unciv.ui.components.widgets.TabbedPager
 import com.unciv.ui.images.ImageGetter
 import com.unciv.ui.screens.basescreen.BaseScreen
 
@@ -22,10 +19,8 @@ class NotificationsOverviewTable(
     persistedData: EmpireOverviewTabPersistableData? = null
 ) : EmpireOverviewTab(viewingPlayer, overviewScreen) {
     class NotificationsTabPersistableData(
-            var scrollY: Float? = null
-    ) : EmpireOverviewTabPersistableData() {
-        override fun isEmpty() = scrollY == null
-    }
+        var scrollY: Float? = null
+    ) : EmpireOverviewTabPersistableData()
     override val persistableData = (persistedData as? NotificationsTabPersistableData) ?: NotificationsTabPersistableData()
     override fun activated(index: Int, caption: String, pager: TabbedPager) {
         if (persistableData.scrollY != null)
@@ -37,7 +32,7 @@ class NotificationsOverviewTable(
     }
 
 
-    private val worldScreen = GUI.getWorldScreen()
+    private val stageWidth = overviewScreen.stage.width
 
     private val notificationLog = viewingPlayer.notificationsLog
     private val notificationTable = Table(BaseScreen.skin)
@@ -58,7 +53,12 @@ class NotificationsOverviewTable(
             notificationTable.add(notificationsArrayTable("Current", viewingPlayer.notifications)).row()
 
         for (notification in notificationLog.asReversed()) {
-            notificationTable.add(notificationsArrayTable(notification.turn.toString(), notification.notifications))
+            notificationTable.add(
+                notificationsArrayTable(
+                    notification.turn.tr(),
+                    notification.notifications
+                )
+            )
             notificationTable.padTop(20f).row()
         }
     }
@@ -70,13 +70,13 @@ class NotificationsOverviewTable(
                         else
                             "Current turn".toLabel()
         turnTable.add(Table().apply {
-            add(ImageGetter.getWhiteDot()).minHeight(2f).width(worldScreen.stage.width/4)
+            add(ImageGetter.getWhiteDot()).minHeight(2f).width(stageWidth / 4)
             add(turnLabel).pad(3f)
-            add(ImageGetter.getWhiteDot()).minHeight(2f).width(worldScreen.stage.width/4)
+            add(ImageGetter.getWhiteDot()).minHeight(2f).width(stageWidth / 4)
         }).row()
 
-        for (category in NotificationCategory.values()){
-            val categoryNotifications = notifications.filter { it.category == category.name }
+        for (category in Notification.NotificationCategory.entries) {
+            val categoryNotifications = notifications.filter { it.category == category }
             if (categoryNotifications.isEmpty()) continue
 
             if (category != NotificationCategory.General)
@@ -85,20 +85,16 @@ class NotificationsOverviewTable(
             for (notification in categoryNotifications) {
                 val notificationTable = Table(BaseScreen.skin)
 
-                val label = ColorMarkupLabel(notification.text, Color.BLACK, fontSize = 20)
+                val label = ColorMarkupLabel(notification.text, ImageGetter.CHARCOAL, fontSize = 20)
                     .apply { wrap = true }
 
-                notificationTable.add(label).width(worldScreen.stage.width/2 - iconSize * notification.icons.size)
+                notificationTable.add(label).width(stageWidth / 2 - iconSize * notification.icons.size)
                 notificationTable.background = BaseScreen.skinStrings.getUiBackground("OverviewScreen/NotificationOverviewTable/Notification", BaseScreen.skinStrings.roundedEdgeRectangleShape)
                 notificationTable.touchable = Touchable.enabled
-                if (notification.action != null)
-                    notificationTable.onClick {
-                        worldScreen.notificationsScroll.oneTimeNotification = notification
-                        UncivGame.Current.resetToWorldScreen()
-                        notification.action?.execute(worldScreen)
-                    }
+                if (notification.actions.isNotEmpty())
+                    notificationTable.onClick { overviewScreen.showOneTimeNotification(notification) }
 
-                notification.addNotificationIconsTo(notificationTable, worldScreen.gameInfo.ruleset, iconSize)
+                notification.addNotificationIconsTo(notificationTable, gameInfo.ruleset, iconSize)
 
                 turnTable.add(notificationTable).padTop(5f)
                 turnTable.padTop(20f).row()

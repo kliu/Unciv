@@ -14,11 +14,12 @@ import com.unciv.logic.map.tile.Tile
 import com.unciv.models.metadata.GameParameters
 import com.unciv.models.metadata.GameSetupInfo
 import com.unciv.models.metadata.Player
-import com.unciv.models.ruleset.ModOptionsConstants
 import com.unciv.models.ruleset.Ruleset
 import com.unciv.models.ruleset.RulesetCache
 import com.unciv.models.ruleset.unique.StateForConditionals
+import com.unciv.models.ruleset.unique.UniqueTriggerActivation
 import com.unciv.models.ruleset.unique.UniqueType
+import com.unciv.models.ruleset.unit.BaseUnit
 import com.unciv.models.stats.Stats
 import com.unciv.models.translations.equalsPlaceholderText
 import com.unciv.models.translations.getPlaceholderParameters
@@ -164,39 +165,47 @@ object GameStarter {
     }
 
     private fun addCivTechs(gameInfo: GameInfo, ruleset: Ruleset, gameSetupInfo: GameSetupInfo) {
-        for (civInfo in gameInfo.civilizations.filter { !it.isBarbarian() }) {
+        fun Civilization.addTechSilently(name: String) {
+            // check if the technology is in the ruleset and not already researched
+            if (!ruleset.technologies.containsKey(name)) return
+            if (tech.isResearched(name)) return
+            tech.addTechnology(name, false)
+        }
+
+        for (civInfo in gameInfo.civilizations) {
+            if (civInfo.isBarbarian) continue
+
+            for (tech in ruleset.technologies.values.filter { it.hasUnique(UniqueType.StartingTech) })
+                civInfo.addTechSilently(tech.name)
 
             if (!civInfo.isHuman())
                 for (tech in gameInfo.getDifficulty().aiFreeTechs)
-                    civInfo.tech.addTechnology(tech)
+                    civInfo.addTechSilently(tech)
 
             // generic start with technology unique
-            for (unique in civInfo.getMatchingUniques(UniqueType.StartsWithTech)) {
-                // get the parameter from the unique
-                val techName = unique.params[0]
-
-                // check if the technology is in the ruleset and not already researched
-                if (ruleset.technologies.containsKey(techName) && !civInfo.tech.isResearched(techName))
-                    civInfo.tech.addTechnology(techName)
-            }
+            for (unique in civInfo.getMatchingUniques(UniqueType.StartsWithTech))
+                civInfo.addTechSilently(unique.params[0])
 
             // add all techs to spectators
             if (civInfo.isSpectator())
                 for (tech in ruleset.technologies.values)
-                    if (!civInfo.tech.isResearched(tech.name))
-                        civInfo.tech.addTechnology(tech.name)
+                    civInfo.addTechSilently(tech.name)
 
-            for (tech in ruleset.technologies.values
-                    .filter { ruleset.eras[it.era()]!!.eraNumber < ruleset.eras[gameSetupInfo.gameParameters.startingEra]!!.eraNumber })
-                if (!civInfo.tech.isResearched(tech.name))
-                    civInfo.tech.addTechnology(tech.name)
+            // Add techs for advanced starting era
+            val startingEraNumber = ruleset.eras[gameSetupInfo.gameParameters.startingEra]!!.eraNumber
+            for (tech in ruleset.technologies.values) {
+                if (ruleset.eras[tech.era()]!!.eraNumber >= startingEraNumber) continue
+                if (civInfo.tech.isUnresearchable(tech)) continue
+                civInfo.addTechSilently(tech.name)
+            }
 
-            civInfo.popupAlerts.clear() // Since adding technologies generates popups...
+            // Since adding technologies generates popups (addTechnology parameter showNotification only suppresses Notifications)
+            civInfo.popupAlerts.clear()
         }
     }
 
     private fun addCivPolicies(gameInfo: GameInfo, ruleset: Ruleset) {
-        for (civInfo in gameInfo.civilizations.filter { !it.isBarbarian() }) {
+        for (civInfo in gameInfo.civilizations.filter { !it.isBarbarian }) {
 
             // generic start with policy unique
             for (unique in civInfo.getMatchingUniques(UniqueType.StartsWithPolicy)) {
@@ -204,12 +213,13 @@ object GameStarter {
                 val policyName = unique.params[0]
 
                 // check if the policy is in the ruleset and not already adopted
-                if (ruleset.policies.containsKey(policyName) && !civInfo.policies.isAdopted(policyName)) {
-                    val policyToAdopt = ruleset.policies[policyName]!!
-                    civInfo.policies.run {
-                        freePolicies++
-                        adopt(policyToAdopt)
-                    }
+                if (!ruleset.policies.containsKey(policyName) || civInfo.policies.isAdopted(policyName))
+                    continue
+
+                val policyToAdopt = ruleset.policies[policyName]!!
+                civInfo.policies.run {
+                    freePolicies++
+                    adopt(policyToAdopt)
                 }
             }
         }
@@ -219,7 +229,7 @@ object GameStarter {
         val ruleSet = gameInfo.ruleset
         val startingEra = gameInfo.gameParameters.startingEra
         val era = ruleSet.eras[startingEra]!!
-        for (civInfo in gameInfo.civilizations.filter { !it.isBarbarian() }) {
+        for (civInfo in gameInfo.civilizations.filter { !it.isBarbarian && !it.isSpectator() }) {
             civInfo.addGold((era.startingGold * gameInfo.speed.goldCostModifier).toInt())
             civInfo.policies.addCulture((era.startingCulture * gameInfo.speed.cultureCostModifier).toInt())
         }
@@ -298,6 +308,22 @@ object GameStarter {
             }
         }.toCollection(chosenPlayers)
 
+        // ensure Spectators always first players
+        val spectators = chosenPlayers.filter { it.chosenCiv == Constants.spectator }
+        val otherPlayers = chosenPlayers.filterNot { it.chosenCiv == Constants.spectator }.toMutableList()
+        
+        // Shuffle Major Civs
+        if (newGameParameters.shufflePlayerOrder) {
+            otherPlayers.shuffle()
+        }
+
+        chosenPlayers.clear()
+        chosenPlayers.addAll(spectators)
+        chosenPlayers.addAll(otherPlayers)
+        
+        for(player in chosenPlayers)
+            println(player.chosenCiv)
+
         // Add CityStates to result - disguised as normal AI, but addCivilizations will detect them
         val numberOfCityStates = if (newGameParameters.randomNumberOfCityStates) {
             // This swaps min and max if the user accidentally swapped min and max
@@ -328,32 +354,26 @@ object GameStarter {
         ruleset: Ruleset,
         chosenPlayers: List<Player>
     ) {
-        val startingTechs = ruleset.technologies.values.filter { it.hasUnique(UniqueType.StartingTech) }
-
         if (!newGameParameters.noBarbarians && ruleset.nations.containsKey(Constants.barbarians)) {
             val barbarianCivilization = Civilization(Constants.barbarians)
             gameInfo.civilizations.add(barbarianCivilization)
         }
 
         val usedCivNames = chosenPlayers.map { it.chosenCiv }.toSet()
-        val (usedMajorCivs, unusedMajorCivs) = ruleset.nations.asSequence()
+        val usedMajorCivs = ruleset.nations.asSequence()
             .filter { it.value.isMajorCiv }
             .map { it.key }
-            .partition { it in usedCivNames }
+            .filter { it in usedCivNames }
 
         for (player in chosenPlayers) {
             val civ = Civilization(player.chosenCiv)
             when (player.chosenCiv) {
-                Constants.spectator ->
-                    civ.playerType = player.playerType
-                in usedMajorCivs -> {
-                    for (tech in startingTechs)
-                        civ.tech.techsResearched.add(tech.name) // can't be .addTechnology because the civInfo isn't assigned yet
+                in usedMajorCivs, Constants.spectator -> {
                     civ.playerType = player.playerType
                     civ.playerId = player.playerId
                 }
                 else ->
-                    if (!civ.cityStateFunctions.initCityState(ruleset, newGameParameters.startingEra, unusedMajorCivs))
+                    if (!civ.cityStateFunctions.initCityState(ruleset, newGameParameters.startingEra, usedMajorCivs))
                         continue
             }
             gameInfo.civilizations.add(civ)
@@ -364,9 +384,6 @@ object GameStarter {
 
         val ruleSet = gameInfo.ruleset
         val tileMap = gameInfo.tileMap
-        val startingEra = gameInfo.gameParameters.startingEra
-        var startingUnits: MutableList<String>
-        var eraUnitReplacement: String
 
         val cityCenterMinStats = sequenceOf(ruleSet.tileImprovements[Constants.cityCenter])
             .filterNotNull()
@@ -378,12 +395,13 @@ object GameStarter {
         for (tile in tileMap.values) {
             startScores[tile] = tile.stats.getTileStartScore(cityCenterMinStats)
         }
-        val allCivs = gameInfo.civilizations.filter { !it.isBarbarian() }
+        val allCivs = gameInfo.civilizations.filter { !it.isBarbarian }
         val landTilesInBigEnoughGroup = getCandidateLand(allCivs.size, tileMap, startScores)
 
         // First we get start locations for the major civs, on the second pass the city states (without predetermined starts) can squeeze in wherever
         val civNamesWithStartingLocations = tileMap.startingLocationsByNation.keys
-        val bestCivs = allCivs.filter { !it.isCityState() || it.civName in civNamesWithStartingLocations }
+        val bestCivs = allCivs.filter { (!it.isCityState || it.civName in civNamesWithStartingLocations)
+            && !it.isSpectator()}
         val bestLocations = getStartingLocations(bestCivs, tileMap, landTilesInBigEnoughGroup, startScores)
         for ((civ, tile) in bestLocations) {
             // A nation can have multiple marked starting locations, of which the first pass may have chosen one
@@ -394,81 +412,114 @@ object GameStarter {
 
         val startingLocations = getStartingLocations(allCivs, tileMap, landTilesInBigEnoughGroup, startScores)
 
-        val settlerLikeUnits = ruleSet.units.filter {
-            it.value.hasUnique(UniqueType.FoundCity)
-        }
-
         // no starting units for Barbarians and Spectators
-        for (civ in gameInfo.civilizations.filter { !it.isBarbarian() && !it.isSpectator() }) {
+        determineStartingUnitsAndLocations(gameInfo, startingLocations, ruleSet)
+    }
+
+    private fun removeAncientRuinsNearStartingLocation(startingLocation: Tile) {
+        for (tile in startingLocation.getTilesInDistance(3)) {
+            if (tile.improvement != null
+                && tile.getTileImprovement()!!.isAncientRuinsEquivalent()
+            ) {
+                tile.removeImprovement() // Remove ancient ruins in immediate vicinity
+            }
+        }
+    }
+
+    private fun determineStartingUnitsAndLocations(
+        gameInfo: GameInfo,
+        startingLocations: HashMap<Civilization, Tile>,
+        ruleset: Ruleset
+    ) {
+        val startingEra = gameInfo.gameParameters.startingEra
+        val settlerLikeUnits = ruleset.units.filter { it.value.isCityFounder() }
+
+        for (civ in gameInfo.civilizations.filter { !it.isBarbarian && !it.isSpectator() }) {
             val startingLocation = startingLocations[civ]!!
 
-            for (tile in startingLocation.getTilesInDistance(3)) {
-                if (tile.improvement != null
-                    && tile.getTileImprovement()!!.isAncientRuinsEquivalent()
-                ) {
-                    tile.changeImprovement(null) // Remove ancient ruins in immediate vicinity
+            removeAncientRuinsNearStartingLocation(startingLocation)
+            val startingUnits = getStartingUnitsForEraAndDifficulty(civ, gameInfo, ruleset, startingEra)
+            adjustStartingUnitsForCityStatesAndOneCityChallenge(civ, gameInfo, startingUnits, settlerLikeUnits)
+            placeStartingUnits(civ, startingLocation, startingUnits, ruleset, ruleset.eras[startingEra]!!.startingMilitaryUnit, settlerLikeUnits)
+
+            //Trigger any global or nation uniques that should triggered.
+            //We may need the starting location for some uniques, which is why we're doing it now
+            val startingTriggers = (ruleset.globalUniques.uniqueObjects + civ.nation.uniqueObjects)
+            for (unique in startingTriggers.filter { !it.hasTriggerConditional() && it.conditionalsApply(civ.state) })
+                UniqueTriggerActivation.triggerUnique(unique, civ, tile = startingLocation)
+        }
+    }
+
+    private fun getStartingUnitsForEraAndDifficulty(civ: Civilization, gameInfo: GameInfo, ruleset: Ruleset, startingEra: String): MutableList<String> {
+        val startingUnits = ruleset.eras[startingEra]?.getStartingUnits(ruleset)
+            ?: throw Exception("Era $startingEra does not exist in the ruleset!")
+
+        // Add extra units granted by difficulty
+        startingUnits.addAll(when {
+            civ.isHuman() -> gameInfo.getDifficulty().playerBonusStartingUnits
+            civ.isMajorCiv() -> gameInfo.getDifficulty().aiMajorCivBonusStartingUnits
+            else -> gameInfo.getDifficulty().aiCityStateBonusStartingUnits
+        })
+
+        return startingUnits
+    }
+
+    private fun getEquivalentUnit(
+        civ: Civilization,
+        unitParam: String,
+        ruleset: Ruleset,
+        eraUnitReplacement: String,
+        settlerLikeUnits: Map<String, BaseUnit>
+    ): BaseUnit? {
+        var unit = unitParam // We want to change it and this is the easiest way to do so
+        if (unit == Constants.eraSpecificUnit) unit = eraUnitReplacement
+        if (unit == Constants.settler && Constants.settler !in ruleset.units) {
+            val buildableSettlerLikeUnits =
+                settlerLikeUnits.filter {
+                    it.value.isBuildable(civ)
+                        && it.value.isCivilian()
                 }
+            if (buildableSettlerLikeUnits.isEmpty()) return null // No settlers in this mod
+            return civ.getEquivalentUnit(buildableSettlerLikeUnits.keys.random())
+        }
+        if (unit == "Worker" && "Worker" !in ruleset.units) {
+            val buildableWorkerLikeUnits = ruleset.units.filter {
+                it.value.hasUnique(UniqueType.BuildImprovements) &&
+                    it.value.isBuildable(civ) && it.value.isCivilian()
             }
+            if (buildableWorkerLikeUnits.isEmpty()) return null // No workers in this mod
+            return civ.getEquivalentUnit(buildableWorkerLikeUnits.keys.random())
+        }
+        return civ.getEquivalentUnit(unit)
+    }
 
-            fun placeNearStartingPosition(unitName: String) {
-                civ.units.placeUnitNearTile(startingLocation.position, unitName)
-            }
+    private fun adjustStartingUnitsForCityStatesAndOneCityChallenge(
+        civ: Civilization,
+        gameInfo: GameInfo,
+        startingUnits: MutableList<String>,
+        settlerLikeUnits: Map<String, BaseUnit>
+    ) {
+        // Adjust starting units for city states
+        if (civ.isCityState && !gameInfo.ruleset.modOptions.hasUnique(UniqueType.AllowCityStatesSpawnUnits)) {
+            val startingSettlers = startingUnits.filter { settlerLikeUnits.contains(it) }
 
-            // Determine starting units based on starting era
-            startingUnits = ruleSet.eras[startingEra]!!.getStartingUnits().toMutableList()
-            eraUnitReplacement = ruleSet.eras[startingEra]!!.startingMilitaryUnit
+            startingUnits.clear()
+            startingUnits.add(startingSettlers.random())
+        }
 
-            // Add extra units granted by difficulty
-            startingUnits.addAll(when {
-                civ.isHuman() -> gameInfo.getDifficulty().playerBonusStartingUnits
-                civ.isMajorCiv() -> gameInfo.getDifficulty().aiMajorCivBonusStartingUnits
-                else -> gameInfo.getDifficulty().aiCityStateBonusStartingUnits
-            })
+        // Adjust starting units for one city challenge
+        if (civ.playerType == PlayerType.Human && gameInfo.gameParameters.oneCityChallenge) {
+            val startingSettlers = startingUnits.filter { settlerLikeUnits.contains(it) }
 
+            startingUnits.removeAll(startingSettlers)
+            startingUnits.add(startingSettlers.random())
+        }
+    }
 
-            fun getEquivalentUnit(civ: Civilization, unitParam: String): String? {
-                var unit = unitParam // We want to change it and this is the easiest way to do so
-                if (unit == Constants.eraSpecificUnit) unit = eraUnitReplacement
-                if (unit == Constants.settler && Constants.settler !in ruleSet.units) {
-                    val buildableSettlerLikeUnits =
-                        settlerLikeUnits.filter {
-                            it.value.isBuildable(civ)
-                            && it.value.isCivilian()
-                        }
-                    if (buildableSettlerLikeUnits.isEmpty()) return null // No settlers in this mod
-                    return civ.getEquivalentUnit(buildableSettlerLikeUnits.keys.random()).name
-                }
-                if (unit == "Worker" && "Worker" !in ruleSet.units) {
-                    val buildableWorkerLikeUnits = ruleSet.units.filter {
-                        it.value.hasUnique(UniqueType.BuildImprovements) &&
-                            it.value.isBuildable(civ) && it.value.isCivilian()
-                    }
-                    if (buildableWorkerLikeUnits.isEmpty()) return null // No workers in this mod
-                    return civ.getEquivalentUnit(buildableWorkerLikeUnits.keys.random()).name
-                }
-                return civ.getEquivalentUnit(unit).name
-            }
-
-            // City states should only spawn with one settler regardless of difficulty, but this may be disabled in mods
-            if (civ.isCityState() && !ruleSet.modOptions.uniques.contains(ModOptionsConstants.allowCityStatesSpawnUnits)) {
-                val startingSettlers = startingUnits.filter { settlerLikeUnits.contains(it) }
-
-                startingUnits.clear()
-                startingUnits.add(startingSettlers.random())
-            }
-
-            // One city challengers should spawn with one settler only regardless of era and difficulty
-            if (civ.playerType == PlayerType.Human && gameInfo.gameParameters.oneCityChallenge) {
-                val startingSettlers = startingUnits.filter { settlerLikeUnits.contains(it) }
-
-                startingUnits.removeAll(startingSettlers)
-                startingUnits.add(startingSettlers.random())
-            }
-
-            for (unit in startingUnits) {
-                val unitToAdd = getEquivalentUnit(civ, unit)
-                if (unitToAdd != null) placeNearStartingPosition(unitToAdd)
-            }
+    private fun placeStartingUnits(civ: Civilization, startingLocation: Tile, startingUnits: MutableList<String>, ruleset: Ruleset, eraUnitReplacement: String, settlerLikeUnits: Map<String, BaseUnit>) {
+        for (unit in startingUnits) {
+            val unitToAdd = getEquivalentUnit(civ, unit, ruleset, eraUnitReplacement, settlerLikeUnits)
+            if (unitToAdd != null) civ.units.placeUnitNearTile(startingLocation.position, unitToAdd)
         }
     }
 
@@ -503,45 +554,80 @@ object GameStarter {
         startScores: HashMap<Tile, Float>
     ): HashMap<Civilization, Tile> {
 
-        val civsOrderedByAvailableLocations = civs.shuffled()   // Order should be random since it determines who gets best start
-            .sortedBy { civ ->
-            when {
-                civ.civName in tileMap.startingLocationsByNation -> 1 // harshest requirements
-                civ.nation.startBias.any { it in tileMap.naturalWonders } && !gameSetupInfo.gameParameters.noStartBias -> 2
-                civ.nation.startBias.contains(Constants.tundra) && !gameSetupInfo.gameParameters.noStartBias -> 3    // Tundra starts are hard to find, so let's do them first
-                civ.nation.startBias.isNotEmpty() && !gameSetupInfo.gameParameters.noStartBias -> 4 // less harsh
-                else -> 5  // no requirements
-            }
-        }.sortedByDescending { it.isHuman() } // More important for humans to get their start biases!
+        val civsOrderedByAvailableLocations = getCivsOrderedByAvailableLocations(civs, tileMap)
 
         for (minimumDistanceBetweenStartingLocations in tileMap.tileMatrix.size / 6 downTo 0) {
-            val freeTiles = landTilesInBigEnoughGroup.asSequence()
-                .filter {
-                    HexMath.getDistanceFromEdge(it.key.position, tileMap.mapParameters) >=
-                            (minimumDistanceBetweenStartingLocations * 2) / 3
-                }.sortedBy { it.value }
-                .map { it.key }
-                .toMutableList()
+            val freeTiles = getFreeTiles(tileMap, landTilesInBigEnoughGroup, minimumDistanceBetweenStartingLocations)
 
-            val startingLocations = HashMap<Civilization, Tile>()
-            for (civ in civsOrderedByAvailableLocations) {
-                val distanceToNext = minimumDistanceBetweenStartingLocations /
-                        (if (civ.isCityState()) 2 else 1) // We allow city states to squeeze in tighter
-                val presetStartingLocation = tileMap.startingLocationsByNation[civ.civName]?.randomOrNull()
-                val startingLocation = if (presetStartingLocation != null) presetStartingLocation
-                else {
-                    if (freeTiles.isEmpty()) break // we failed to get all the starting tiles with this minimum distance
-                    getOneStartingLocation(civ, tileMap, freeTiles, startScores)
-                }
-                startingLocations[civ] = startingLocation
-                freeTiles.removeAll(tileMap.getTilesInDistance(startingLocation.position, distanceToNext)
-                    .toSet())
-            }
-            if (startingLocations.size < civs.size) continue // let's try again with less minimum distance!
-
-            return startingLocations
+            val startingLocations = getStartingLocationsForCivs(civsOrderedByAvailableLocations, tileMap, freeTiles, startScores, minimumDistanceBetweenStartingLocations)
+            if (startingLocations != null) return startingLocations
         }
         throw Exception("Didn't manage to get starting tiles even with distance of 1?")
+    }
+
+    private fun getCivsOrderedByAvailableLocations(civs: List<Civilization>, tileMap: TileMap): List<Civilization> {
+        return civs.shuffled()   // Order should be random since it determines who gets best start
+            .sortedBy { civ ->
+                when {
+                    civ.civName in tileMap.startingLocationsByNation -> 1 // harshest requirements
+                    civ.nation.startBias.any { it in tileMap.naturalWonders } && !gameSetupInfo.gameParameters.noStartBias -> 2
+                    civ.nation.startBias.contains(Constants.tundra) && !gameSetupInfo.gameParameters.noStartBias -> 3    // Tundra starts are hard to find, so let's do them first
+                    civ.nation.startBias.isNotEmpty() && !gameSetupInfo.gameParameters.noStartBias -> 4 // less harsh
+                    else -> 5  // no requirements
+                }
+            }.sortedByDescending { it.isHuman() } // More important for humans to get their start biases!
+    }
+
+    private fun getFreeTiles(tileMap: TileMap, landTilesInBigEnoughGroup: Map<Tile, Float>, minimumDistanceBetweenStartingLocations: Int): MutableList<Tile> {
+        return landTilesInBigEnoughGroup.asSequence()
+            .filter {
+                HexMath.getDistanceFromEdge(it.key.position, tileMap.mapParameters) >=
+                    (minimumDistanceBetweenStartingLocations * 2) / 3
+            }.sortedBy { it.value }
+            .map { it.key }
+            .toMutableList()
+    }
+
+    private fun getStartingLocationsForCivs(
+        civsOrderedByAvailableLocations: List<Civilization>,
+        tileMap: TileMap,
+        freeTiles: MutableList<Tile>,
+        startScores: HashMap<Tile, Float>,
+        minimumDistanceBetweenStartingLocations: Int
+    ): HashMap<Civilization, Tile>? {
+        val startingLocations = HashMap<Civilization, Tile>()
+        for (civ in civsOrderedByAvailableLocations) {
+
+            val startingLocation = getCivStartingLocation(civ, tileMap, freeTiles, startScores)
+            startingLocation ?: break
+
+            startingLocations[civ] = startingLocation
+
+            val distanceToNext = minimumDistanceBetweenStartingLocations /
+                (if (civ.isCityState) 2 else 1) // We allow city states to squeeze in tighter
+            freeTiles.removeAll(tileMap.getTilesInDistance(startingLocation.position, distanceToNext)
+                .toSet())
+        }
+        return if (startingLocations.size < civsOrderedByAvailableLocations.size) null else startingLocations
+    }
+
+    private fun getCivStartingLocation(
+        civ: Civilization,
+        tileMap: TileMap,
+        freeTiles: MutableList<Tile>,
+        startScores: HashMap<Tile, Float>,
+    ): Tile? {
+        var startingLocation = tileMap.startingLocationsByNation[civ.civName]?.randomOrNull()
+        if (startingLocation == null) {
+            startingLocation = tileMap.startingLocationsByNation[Constants.spectator]?.randomOrNull()
+            if (startingLocation != null) {
+                tileMap.startingLocationsByNation[Constants.spectator]?.remove(startingLocation)
+            }
+        }
+        if (startingLocation == null && freeTiles.isNotEmpty())
+            startingLocation = getOneStartingLocation(civ, tileMap, freeTiles, startScores)
+        // If startingLocation is null we failed to get all the starting tiles with this minimum distance
+        return startingLocation
     }
 
     private fun getOneStartingLocation(

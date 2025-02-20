@@ -6,27 +6,29 @@ import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.scenes.scene2d.ui.SelectBox
 import com.badlogic.gdx.scenes.scene2d.ui.Table
 import com.badlogic.gdx.utils.Array
+import com.unciv.Constants
 import com.unciv.GUI
 import com.unciv.models.metadata.GameSettings
-import com.unciv.models.metadata.ScreenSize
+import com.unciv.models.metadata.GameSettings.ScreenSize
 import com.unciv.models.skins.SkinCache
 import com.unciv.models.tilesets.TileSetCache
 import com.unciv.models.translations.tr
-import com.unciv.ui.components.UncivSlider
-import com.unciv.ui.components.WrappableLabel
 import com.unciv.ui.components.extensions.addSeparator
 import com.unciv.ui.components.extensions.brighten
-import com.unciv.ui.components.extensions.onChange
-import com.unciv.ui.components.extensions.onClick
 import com.unciv.ui.components.extensions.toLabel
 import com.unciv.ui.components.extensions.toTextButton
+import com.unciv.ui.components.input.onChange
+import com.unciv.ui.components.input.onClick
+import com.unciv.ui.components.widgets.TranslatedSelectBox
+import com.unciv.ui.components.widgets.UncivSlider
+import com.unciv.ui.components.widgets.WrappableLabel
 import com.unciv.ui.images.ImageGetter
 import com.unciv.ui.popups.ConfirmPopup
-import com.unciv.ui.screens.basescreen.BaseScreen
-import com.unciv.ui.screens.newgamescreen.TranslatedSelectBox
+import com.unciv.ui.screens.basescreen.BaseScreen.Companion.skin
 import com.unciv.ui.screens.worldscreen.NotificationsScroll
 import com.unciv.utils.Display
 import com.unciv.utils.ScreenMode
+import com.unciv.utils.ScreenOrientation
 
 /**
  *  @param onChange Callback for _major_ changes, OptionsPopup will rebuild itself and the WorldScreen
@@ -34,16 +36,17 @@ import com.unciv.utils.ScreenMode
 fun displayTab(
     optionsPopup: OptionsPopup,
     onChange: () -> Unit,
-) = Table(BaseScreen.skin).apply {
+) = Table(skin).apply {
     pad(10f)
     defaults().pad(2.5f)
 
     val settings = optionsPopup.settings
 
-    add("Screen".toLabel(fontSize = 24)).colspan(2).row()
+    add("Screen".toLabel(fontSize = Constants.headingFontSize)).colspan(2).row()
 
-    addScreenModeSelectBox(this, settings, optionsPopup.selectBoxMinWidth)
     addScreenSizeSelectBox(this, settings, optionsPopup.selectBoxMinWidth, onChange)
+    addScreenOrientationSelectBox(this, settings, optionsPopup.selectBoxMinWidth, onChange)
+    addScreenModeSelectBox(this, settings, optionsPopup.selectBoxMinWidth)
 
 
     if (Gdx.app.type == Application.ApplicationType.Desktop) {
@@ -56,24 +59,26 @@ fun displayTab(
     }
 
     addSeparator()
-    add("Graphics".toLabel(fontSize = 24)).colspan(2).row()
+    add("Graphics".toLabel(fontSize = Constants.headingFontSize)).colspan(2).row()
 
     addTileSetSelectBox(this, settings, optionsPopup.selectBoxMinWidth, onChange)
     addUnitSetSelectBox(this, settings, optionsPopup.selectBoxMinWidth, onChange)
     addSkinSelectBox(this, settings, optionsPopup.selectBoxMinWidth, onChange)
 
     addSeparator()
-    add("UI".toLabel(fontSize = 24)).colspan(2).row()
+    add("UI".toLabel(fontSize = Constants.headingFontSize)).colspan(2).row()
 
     addNotificationScrollSelect(this, settings, optionsPopup.selectBoxMinWidth)
-    addMinimapSizeSlider(this, settings, optionsPopup.selectBoxMinWidth)
+    optionsPopup.addCheckbox(this, "Show minimap", settings.showMinimap, updateWorld = true) { settings.showMinimap = it }
     optionsPopup.addCheckbox(this, "Show tutorials", settings.showTutorials, updateWorld = true, newRow = false) { settings.showTutorials = it }
     addResetTutorials(this, settings)
     optionsPopup.addCheckbox(this, "Show zoom buttons in world screen", settings.showZoomButtons, true) { settings.showZoomButtons = it }
     optionsPopup.addCheckbox(this, "Experimental Demographics scoreboard", settings.useDemographics, true) { settings.useDemographics = it }
+    optionsPopup.addCheckbox(this, "Never close popups by clicking outside", settings.forbidPopupClickBehindToClose, false) { settings.forbidPopupClickBehindToClose = it }
+    addPediaUnitArtSizeSlider(this, settings, optionsPopup.selectBoxMinWidth)
 
     addSeparator()
-    add("Visual Hints".toLabel(fontSize = 24)).colspan(2).row()
+    add("Visual Hints".toLabel(fontSize = Constants.headingFontSize)).colspan(2).row()
 
     optionsPopup.addCheckbox(this, "Show unit movement arrows", settings.showUnitMovements, true) { settings.showUnitMovements = it }
     optionsPopup.addCheckbox(this, "Show suggested city locations for units that can found cities", settings.showSettlersSuggestedCityLocations, true) { settings.showSettlersSuggestedCityLocations = it }
@@ -85,7 +90,7 @@ fun displayTab(
     addUnitIconAlphaSlider(this, settings, optionsPopup.selectBoxMinWidth)
 
     addSeparator()
-    add("Performance".toLabel(fontSize = 24)).colspan(2).row()
+    add("Performance".toLabel(fontSize = Constants.headingFontSize)).colspan(2).row()
 
     optionsPopup.addCheckbox(this, "Continuous rendering", settings.continuousRendering) {
         settings.continuousRendering = it
@@ -99,36 +104,6 @@ fun displayTab(
     )
     continuousRenderingLabel.wrap = true
     add(continuousRenderingLabel).colspan(2).padTop(10f).row()
-}
-
-private fun addMinimapSizeSlider(table: Table, settings: GameSettings, selectBoxMinWidth: Float) {
-    table.add("Minimap size".toLabel()).left().fillX()
-
-    // The meaning of the values needs a formula to be synchronized between here and
-    // [Minimap.init]. It goes off-10%-11%..29%-30%-35%-40%-45%-50% - and the percentages
-    // correspond roughly to the minimap's proportion relative to screen dimensions.
-    val offTranslated = "off".tr()  // translate only once and cache in closure
-    val getTipText: (Float) -> String = {
-        when (it) {
-            0f -> offTranslated
-            in 0.99f..21.01f -> "%.0f".format(it + 9) + "%"
-            else -> "%.0f".format(it * 5 - 75) + "%"
-        }
-    }
-    val minimapSlider = UncivSlider(
-        0f, 25f, 1f,
-        initial = if (settings.showMinimap) settings.minimapSize.toFloat() else 0f,
-        getTipText = getTipText
-    ) {
-        val size = it.toInt()
-        if (size == 0) settings.showMinimap = false
-        else {
-            settings.showMinimap = true
-            settings.minimapSize = size
-        }
-        GUI.setUpdateWorldOnNextRender()
-    }
-    table.add(minimapSlider).minWidth(selectBoxMinWidth).pad(10f).row()
 }
 
 private fun addScrollSpeedSlider(table: Table, settings: GameSettings, selectBoxMinWidth: Float) {
@@ -159,6 +134,19 @@ private fun addUnitIconAlphaSlider(table: Table, settings: GameSettings, selectB
     table.add(unitIconAlphaSlider).minWidth(selectBoxMinWidth).pad(10f).row()
 }
 
+private fun addPediaUnitArtSizeSlider(table: Table, settings: GameSettings, selectBoxMinWidth: Float) {
+    table.add("Size of Unitset art in Civilopedia".toLabel()).left().fillX()
+
+    val unitArtSizeSlider = UncivSlider(
+        0f, 360f, 1f, initial = settings.pediaUnitArtSize
+    ) {
+        settings.pediaUnitArtSize = it
+        GUI.setUpdateWorldOnNextRender()
+    }
+    unitArtSizeSlider.setSnapToValues(threshold = 60f, 0f, 32f, 48f, 64f, 96f, 120f, 180f, 240f, 360f)
+    table.add(unitArtSizeSlider).minWidth(selectBoxMinWidth).pad(10f).row()
+}
+
 private fun addScreenModeSelectBox(table: Table, settings: GameSettings, selectBoxMinWidth: Float) {
     table.add("Screen Mode".toLabel()).left().fillX()
 
@@ -181,13 +169,31 @@ private fun addScreenModeSelectBox(table: Table, settings: GameSettings, selectB
 private fun addScreenSizeSelectBox(table: Table, settings: GameSettings, selectBoxMinWidth: Float, onResolutionChange: () -> Unit) {
     table.add("Screen Size".toLabel()).left().fillX()
 
-    val screenSizeSelectBox = TranslatedSelectBox(ScreenSize.values().map { it.name }, settings.screenSize.name, table.skin)
+    val screenSizeSelectBox = TranslatedSelectBox(ScreenSize.entries.map { it.name }, settings.screenSize.name)
     table.add(screenSizeSelectBox).minWidth(selectBoxMinWidth).pad(10f).row()
 
     screenSizeSelectBox.onChange {
         settings.screenSize = ScreenSize.valueOf(screenSizeSelectBox.selected.value)
         onResolutionChange()
     }
+}
+
+private fun addScreenOrientationSelectBox(table: Table, settings: GameSettings, selectBoxMinWidth: Float, onOrientationChange: () -> Unit){
+    if (!Display.hasOrientation()) return
+    
+    table.add("Screen orientation".toLabel()).left().fillX()
+
+    val selectBox = SelectBox<ScreenOrientation>(skin)
+    selectBox.items = Array(ScreenOrientation.entries.toTypedArray())
+    selectBox.selected = settings.displayOrientation
+    selectBox.onChange {
+        val orientation = selectBox.selected
+        settings.displayOrientation = orientation
+        Display.setOrientation(orientation)
+        onOrientationChange()
+    }
+
+    table.add(selectBox).minWidth(selectBoxMinWidth).pad(10f).row()
 }
 
 private fun addTileSetSelectBox(table: Table, settings: GameSettings, selectBoxMinWidth: Float, onTilesetChange: () -> Unit) {
@@ -276,9 +282,8 @@ private fun addNotificationScrollSelect(table: Table, settings: GameSettings, se
     table.add("Notifications on world screen".toLabel()).left().fillX()
 
     val selectBox = TranslatedSelectBox(
-        NotificationsScroll.UserSetting.values().map { it.name },
-        settings.notificationScroll,
-        table.skin
+        NotificationsScroll.UserSetting.entries.map { it.name },
+        settings.notificationScroll
     )
     table.add(selectBox).minWidth(selectBoxMinWidth).pad(10f).row()
 

@@ -6,7 +6,7 @@ import com.badlogic.gdx.scenes.scene2d.ui.Table
 import com.badlogic.gdx.scenes.scene2d.ui.TextField
 import com.unciv.ui.images.ImageGetter
 import com.unciv.ui.screens.basescreen.BaseScreen
-import com.unciv.ui.components.UncivTextField
+import com.unciv.ui.components.widgets.UncivTextField
 import com.unciv.ui.components.extensions.surroundWithCircle
 import com.unciv.ui.components.extensions.toLabel
 
@@ -24,7 +24,7 @@ import com.unciv.ui.components.extensions.toLabel
 class AskTextPopup(
     screen: BaseScreen,
     label: String = "Please enter some text",
-    icon: Group = ImageGetter.getImage("OtherIcons/Pencil").apply { this.color = Color.BLACK }.surroundWithCircle(80f),
+    icon: Group = ImageGetter.getImage("OtherIcons/Pencil").apply { this.color = ImageGetter.CHARCOAL }.surroundWithCircle(80f),
     defaultText: String = "",
     errorText: String = "Invalid input! Please enter a different string.",
     maxLength: Int = 32,
@@ -40,7 +40,7 @@ class AskTextPopup(
         wrapper.add(label.toLabel())
         add(wrapper).colspan(2).row()
 
-        val nameField = UncivTextField.create(label, defaultText)
+        val nameField = UncivTextField(label, defaultText)
         nameField.textFieldFilter = TextField.TextFieldFilter { _, char -> char !in illegalChars}
         nameField.maxLength = maxLength
 

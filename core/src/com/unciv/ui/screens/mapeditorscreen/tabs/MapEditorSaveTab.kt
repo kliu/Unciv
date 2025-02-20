@@ -1,32 +1,34 @@
 package com.unciv.ui.screens.mapeditorscreen.tabs
 
-import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.files.FileHandle
 import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.scenes.scene2d.ui.Table
 import com.badlogic.gdx.scenes.scene2d.ui.TextField
+import com.unciv.Constants
 import com.unciv.logic.files.MapSaver
 import com.unciv.logic.map.MapGeneratedMainType
 import com.unciv.logic.map.TileMap
 import com.unciv.models.translations.tr
-import com.unciv.ui.screens.mapeditorscreen.MapEditorFilesTable
-import com.unciv.ui.screens.mapeditorscreen.MapEditorScreen
+import com.unciv.ui.components.widgets.UncivTextField
+import com.unciv.ui.components.extensions.isEnabled
+import com.unciv.ui.components.extensions.toTextButton
+import com.unciv.ui.components.input.KeyCharAndCode
+import com.unciv.ui.components.input.keyShortcuts
+import com.unciv.ui.components.input.onActivation
+import com.unciv.ui.components.input.onChange
+import com.unciv.ui.components.input.onClick
+import com.unciv.ui.components.widgets.AutoScrollPane
+import com.unciv.ui.components.widgets.TabbedPager
 import com.unciv.ui.popups.ConfirmPopup
 import com.unciv.ui.popups.Popup
 import com.unciv.ui.popups.ToastPopup
-import com.unciv.ui.components.AutoScrollPane
 import com.unciv.ui.screens.basescreen.BaseScreen
-import com.unciv.ui.components.KeyCharAndCode
-import com.unciv.ui.components.TabbedPager
-import com.unciv.ui.components.UncivTextField
-import com.unciv.ui.components.extensions.isEnabled
-import com.unciv.ui.components.extensions.keyShortcuts
-import com.unciv.ui.components.extensions.onActivation
-import com.unciv.ui.components.extensions.onChange
-import com.unciv.ui.components.extensions.onClick
-import com.unciv.ui.components.extensions.toTextButton
+import com.unciv.ui.screens.mapeditorscreen.MapEditorFilesTable
+import com.unciv.ui.screens.mapeditorscreen.MapEditorScreen
+import com.unciv.utils.Concurrency
 import com.unciv.utils.Log
-import kotlin.concurrent.thread
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.isActive
 
 class MapEditorSaveTab(
     private val editorScreen: MapEditorScreen,
@@ -35,13 +37,15 @@ class MapEditorSaveTab(
     private val mapFiles = MapEditorFilesTable(
         initWidth = editorScreen.getToolsWidth() - 40f,
         includeMods = false,
-        this::selectFile)
+        this::selectFile,
+        this::saveHandler
+    )
 
     private val saveButton = "Save map".toTextButton()
     private val deleteButton = "Delete map".toTextButton()
     private val quitButton = "Exit map editor".toTextButton()
 
-    private val mapNameTextField = UncivTextField.create("Map Name")
+    private val mapNameTextField = UncivTextField("Map Name")
 
     private var chosenMap: FileHandle? = null
 
@@ -76,11 +80,18 @@ class MapEditorSaveTab(
         add(buttonTable).row()
     }
 
+    private fun setSaveButton(enabled: Boolean) {
+        saveButton.isEnabled = enabled
+        saveButton.setText((if (enabled) "Save map" else Constants.working).tr())
+    }
+
     private fun saveHandler() {
         if (mapNameTextField.text.isBlank()) return
         editorScreen.tileMap.mapParameters.name = mapNameTextField.text
         editorScreen.tileMap.mapParameters.type = MapGeneratedMainType.custom
-        thread(name = "MapSaver", block = this::saverThread)
+        editorScreen.tileMap.description = editorScreen.descriptionTextField.text
+        setSaveButton(false)
+        editorScreen.startBackgroundJob("MapSaver", false) { saverThread() }
     }
 
     private fun deleteHandler() {
@@ -106,7 +117,7 @@ class MapEditorSaveTab(
         stage.keyboardFocus = null
     }
 
-    fun selectFile(file: FileHandle?) {
+    private fun selectFile(file: FileHandle?) {
         chosenMap = file
         mapNameTextField.text = file?.name() ?: editorScreen.tileMap.mapParameters.name
         if (mapNameTextField.text.isBlank()) mapNameTextField.text = "My new map".tr()
@@ -117,22 +128,26 @@ class MapEditorSaveTab(
         deleteButton.color = if (file != null) Color.SCARLET else Color.BROWN
     }
 
-    private fun saverThread() {
+    private fun CoroutineScope.saverThread() {
         try {
             val mapToSave = editorScreen.getMapCloneForSave()
+            if (!isActive) return
             mapToSave.assignContinents(TileMap.AssignContinentsMode.Reassign)
+            if (!isActive) return
             MapSaver.saveMap(mapNameTextField.text, mapToSave)
-            Gdx.app.postRunnable {
+            Concurrency.runOnGLThread {
                 ToastPopup("Map saved successfully!", editorScreen)
             }
             editorScreen.isDirty = false
+            setSaveButton(true)
         } catch (ex: Exception) {
             Log.error("Failed to save map", ex)
-            Gdx.app.postRunnable {
+            Concurrency.runOnGLThread {
                 val cantLoadGamePopup = Popup(editorScreen)
                 cantLoadGamePopup.addGoodSizedLabel("It looks like your map can't be saved!").row()
                 cantLoadGamePopup.addCloseButton()
                 cantLoadGamePopup.open(force = true)
+                setSaveButton(true)
             }
         }
     }

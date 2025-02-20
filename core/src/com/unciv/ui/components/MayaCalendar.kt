@@ -2,17 +2,19 @@ package com.unciv.ui.components
 
 import com.badlogic.gdx.graphics.Color
 import com.unciv.Constants
+import com.unciv.UncivGame
+import com.unciv.logic.automation.civilization.NextTurnAutomation
 import com.unciv.logic.civilization.Civilization
 import com.unciv.models.ruleset.unique.UniqueTriggerActivation
 import com.unciv.models.ruleset.unique.UniqueType
 import com.unciv.models.translations.tr
 import com.unciv.ui.popups.Popup
-import com.unciv.ui.components.KeyCharAndCode.Companion.makeChar
-import com.unciv.ui.components.KeyCharAndCode.Companion.toCode
-import com.unciv.ui.components.extensions.addSeparator
+import com.unciv.ui.components.input.KeyCharAndCode.Companion.makeChar
+import com.unciv.ui.components.input.KeyCharAndCode.Companion.toCode
 import com.unciv.ui.screens.basescreen.BaseScreen
 import kotlin.math.abs
 
+@Suppress("MemberVisibilityCanBePrivate")  // stuff only accessed through allSymbols looks cleaner with same visibility
 object MayaCalendar {
     // Glyphs / icons
     private const val iconFolder = "MayaCalendar/"
@@ -31,12 +33,12 @@ object MayaCalendar {
     fun digitIcon(ch: Char) = iconFolder + (ch.toCode() - zero.toCode()).toString()
 
     val allSymbols = sequence {
-        yield(tun)
-        yield(katun)
-        yield(baktun)
-        yieldAll(digits)
+        yield(tun to tunIcon)
+        yield(katun to katunIcon)
+        yield(baktun to baktunIcon)
+        yieldAll(digits.map {it to digitIcon(it)})
     }.iterator().run {
-        Array<Char>(23) { next() }
+        Array(23) { next() }
     }
 
     // Calculation
@@ -73,12 +75,9 @@ object MayaCalendar {
         val game = civInfo.gameInfo
         val year = game.getYear()
         if (!isNewCycle(year, game.getYear(-1))) return
-        for (unique in civInfo.getMatchingUniques(UniqueType.MayanGainGreatPerson)) {
-            UniqueTriggerActivation.triggerCivwideUnique(
-                unique, civInfo,
-                notification = "{A new b'ak'tun has just begun!}\n{A Great Person joins you!}"
-            )
-        }
+        civInfo.greatPeople.triggerMayanGreatPerson()
+        if (civInfo.isAI() || UncivGame.Current.worldScreen?.autoPlay?.isAutoPlayingAndFullAutoPlayAI() == true)
+            NextTurnAutomation.chooseGreatPerson(civInfo)
     }
 
     // User interface to explain changed year display

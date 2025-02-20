@@ -1,7 +1,7 @@
 package com.unciv.ui.screens.mapeditorscreen
 
-import com.unciv.ui.components.KeyCharAndCode
-import com.unciv.ui.components.TabbedPager
+import com.unciv.ui.components.widgets.TabbedPager
+import com.unciv.ui.components.input.KeyCharAndCode
 import com.unciv.ui.images.ImageGetter
 import com.unciv.ui.screens.mapeditorscreen.tabs.MapEditorEditTab
 import com.unciv.ui.screens.mapeditorscreen.tabs.MapEditorGenerateTab
@@ -20,7 +20,7 @@ class MapEditorMainTabs(
     capacity = 7
 ) {
     val view = MapEditorViewTab(editorScreen)
-    val generate = MapEditorGenerateTab(editorScreen)
+    val generate = MapEditorGenerateTab(editorScreen, headerHeight)
     val edit = MapEditorEditTab(editorScreen, headerHeight)
     val load = MapEditorLoadTab(editorScreen, headerHeight)
     val save = MapEditorSaveTab(editorScreen, headerHeight)
