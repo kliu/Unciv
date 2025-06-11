@@ -1,3 +1,26 @@
+## 4.16.15
+
+Fixed Gold being translated in trade offer with peace treaty
+
+By metablaster:
+- Improved diagram colors in global politics 
+- Fix crash for automated Fighter units 
+- Fix automated long range units not heading to enemy city
+
+modding: Show status page for civilian units - By SomeTroglodyte
+
+Add "don't spy on us" has a demand - By Emandac
+
+## 4.16.14
+
+Mod checking: Catch unexpected validation exceptions 
+
+Add uniques to remove tile resources and improvements - By RobLoach
+
+Upon Ending Golden Age unique - By PLynx01
+
+Fix Civilopedia when opened for a religion-free ruleset without a loaded game - By SomeTroglodyte
+
 ## 4.16.13
 
 Fixed techs showing "0 turns" and yet not being researched
